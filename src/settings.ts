@@ -40,7 +40,7 @@ export const DEFAULT_SETTINGS: PCSettings = {
 	brushSize: 0.04,
 	brushSoftness: 0.5,
 	mapDefaults: JSON.parse(JSON.stringify(DEFAULT_MAP_SETTINGS)),
-	github: { token: "", repo: "", branch: "pointcrawl-data", pagesUrl: "", publishSide: 4096, debounceSec: 2 },
+	github: { token: "", repo: "", branch: "pointcrawl-data", pagesUrl: "", publishSide: 4096, debounceSec: 1 },
 	published: {},
 };
 
@@ -235,8 +235,8 @@ export class PCSettingTab extends PluginSettingTab {
 			.addText((t) => t.setPlaceholder("https://yourname.github.io/pointcrawl-player/").setValue(g.pagesUrl).onChange((v) => { g.pagesUrl = v.trim(); this.save(); }));
 		new Setting(el).setName("Published map resolution").setDesc("The map is re-encoded as WebP at this size for players. Your original stays private.")
 			.addDropdown((d) => d.addOptions({ "2048": "2048 px", "3072": "3072 px", "4096": "4096 px", "6144": "6144 px" }).setValue(String(g.publishSide)).onChange((v) => { g.publishSide = +v; this.save(); }));
-		new Setting(el).setName("Live update delay").setDesc("Seconds to wait after your last change before pushing. Keep at 2 or more to avoid GitHub rate limits.")
-			.addSlider((sl) => sl.setLimits(2, 10, 1).setValue(g.debounceSec).setDynamicTooltip().onChange((v) => { g.debounceSec = v; this.save(); }));
+		new Setting(el).setName("Live update delay").setDesc("Seconds to wait after your last change before pushing. Lower is snappier. Rapid edits are batched into one push, and GitHub allows roughly 500 writes an hour, so low values are fine for normal play.")
+			.addSlider((sl) => sl.setLimits(0.5, 10, 0.5).setValue(g.debounceSec).setDynamicTooltip().onChange((v) => { g.debounceSec = v; this.save(); }));
 		new Setting(el).setName("Test connection").addButton((b) => b.setButtonText("Test").onClick(async () => {
 			b.setDisabled(true);
 			try { new Notice(await this.plugin.github.test(), 6000); } catch (e) { new Notice(String((e as Error).message), 8000); }

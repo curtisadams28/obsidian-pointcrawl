@@ -39,9 +39,13 @@ Custom icons: *Settings → Icons → Add icons*. Single-colour icons (dark on w
 
 1. Create a **public** GitHub repo (it needs at least one commit), push this project's `docs/` folder to it (including `docs/js`, which holds the built player script), and enable **Settings → Pages → Deploy from branch → /docs**.
 2. Create a fine-grained token with **Contents: read and write** on that repo. In the plugin settings enter the token and `owner/repo`, then press **Test**.
-3. In a map: **Copy player link**, send it to your players, then switch on **Live** (radio icon). Changes push after a short delay (default 2 s) and the page polls every 4 s.
+3. In a map: **Copy player link**, send it to your players, then switch on **Live** (radio icon). Changes push after a short delay (default 1 s) and the page checks for updates every 2 s, so a change normally shows up for players within a few seconds.
 
 What gets published: a re-encoded WebP of the map (never the original), a small fog mask, and only the nodes players can currently see (their titles, icons and positions; never links to your notes). Everything lives on the `pointcrawl-data` branch, so Pages never rebuilds while you play. Anyone with the link can see it, and because the repo is public so can anyone who finds the repo.
+
+### How live updates work
+
+The player page reads `state.json` through the GitHub API, which is never cached, and asks "has it changed?" every 2 seconds. Unchanged replies are free against GitHub's rate limit, and only real changes count (60 an hour per player IP address without a token). If GitHub does rate-limit a player, their page falls back to GitHub's raw file host, which caches for 5+ minutes, and shows **Delayed updates** until the limit resets. The map image itself is a hashed file, so it is never stale.
 
 ## Performance notes
 
