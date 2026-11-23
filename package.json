@@ -1,0 +1,17 @@
+{
+	"name": "obsidian-pointcrawl-map",
+	"version": "0.1.0",
+	"private": true,
+	"scripts": {
+		"build": "tsc -p tsconfig.json --noEmit && node esbuild.config.mjs production && npm run build:player",
+		"dev": "node esbuild.config.mjs",
+		"build:player": "tsc -p player/tsconfig.json"
+	},
+	"devDependencies": {
+		"@types/node": "^20.11.0",
+		"builtin-modules": "^3.3.0",
+		"esbuild": "^0.21.0",
+		"obsidian": "latest",
+		"typescript": "^5.4.0"
+	}
+}

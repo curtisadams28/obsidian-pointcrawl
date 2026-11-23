@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Point crawl</title>
+<meta name="color-scheme" content="dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Spectral:ital,wght@0,500;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+	--ink: #0e1317; --slate: #19212a; --mist: #aeb9c2; --bone: #ecebe6; --lamp: #e1b95a; --ok: #7fc8a0; --warn: #e1b95a; --bad: #e07a6a;
+	--safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px); --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--ink); color: var(--bone); font-family: "Atkinson Hyperlegible", system-ui, sans-serif; overflow: hidden; }
+#stage { position: fixed; inset: 0; }
+#stage canvas { position: absolute; inset: 0; }
+
+.plaque { position: fixed; top: calc(var(--safe-t) + 14px); left: calc(var(--safe-l) + 14px); max-width: min(60vw, 420px); margin: 0; padding: 8px 16px 9px; font: italic 400 20px/1.2 "Spectral", Georgia, serif; color: var(--bone); background: rgba(14, 19, 23, 0.78); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); border-left: 3px solid var(--lamp); border-radius: 0 6px 6px 0; pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.chip { position: fixed; left: calc(var(--safe-l) + 14px); bottom: calc(var(--safe-b) + 14px); display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; color: var(--mist); background: rgba(14, 19, 23, 0.78); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); border-radius: 999px; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.chip[data-kind="stale"] .dot { background: var(--warn); }
+.chip[data-kind="error"] .dot { background: var(--bad); }
+
+.zoom { position: fixed; right: calc(var(--safe-r) + 14px); bottom: calc(var(--safe-b) + 14px); display: flex; flex-direction: column; background: rgba(14, 19, 23, 0.78); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); border-radius: 10px; overflow: hidden; }
+.zoom button { width: 44px; height: 44px; display: grid; place-items: center; border: 0; background: transparent; color: var(--bone); font: 700 20px/1 "Atkinson Hyperlegible", system-ui, sans-serif; cursor: pointer; }
+.zoom button + button { border-top: 1px solid rgba(255, 255, 255, 0.09); }
+.zoom button:hover { background: rgba(255, 255, 255, 0.07); }
+.zoom button:focus-visible, .chip:focus-visible { outline: 2px solid var(--lamp); outline-offset: -2px; }
+.zoom svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.empty { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 24px; text-align: center; background: radial-gradient(ellipse at center, var(--slate), var(--ink) 70%); }
+.empty[hidden], .plaque[hidden], .chip[hidden] { display: none; }
+.empty h1 { margin: 0; font: italic 500 clamp(26px, 5vw, 40px)/1.15 "Spectral", Georgia, serif; }
+.empty p { margin: 0; max-width: 38ch; color: var(--mist); line-height: 1.5; }
+</style>
+</head>
+<body>
+<main id="stage"></main>
+<h1 class="plaque" id="plaque" hidden></h1>
+<div class="chip" id="chip" data-kind="live" hidden role="status"><span class="dot"></span><span id="chipText">Connecting…</span></div>
+<div class="zoom" aria-label="Map controls">
+	<button id="zin" aria-label="Zoom in">+</button>
+	<button id="zout" aria-label="Zoom out">&minus;</button>
+	<button id="zfit" aria-label="Fit map to screen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+</div>
+<section class="empty" id="empty"><h1 id="emptyTitle">Connecting…</h1><p id="emptyBody"></p></section>
+<script type="module" src="js/player/src/main.js"></script>
+</body>
+</html>

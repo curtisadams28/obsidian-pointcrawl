@@ -1,0 +1,9 @@
+{
+	"id": "pointcrawl-map",
+	"name": "Point Crawl Map",
+	"version": "0.1.0",
+	"minAppVersion": "1.5.0",
+	"description": "Plot nodes on a map image for point crawl games, with fog of war and a live player view.",
+	"author": "",
+	"isDesktopOnly": false
+}
