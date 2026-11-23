@@ -37,7 +37,7 @@ Custom icons: *Settings → Icons → Add icons*. Single-colour icons (dark on w
 
 ## Player site
 
-1. Create a **public** GitHub repo (it needs at least one commit), push this project's `docs/` folder to it, and enable **Settings → Pages → Deploy from branch → /docs**.
+1. Create a **public** GitHub repo (it needs at least one commit), push this project's `docs/` folder to it (including `docs/js`, which holds the built player script), and enable **Settings → Pages → Deploy from branch → /docs**.
 2. Create a fine-grained token with **Contents: read and write** on that repo. In the plugin settings enter the token and `owner/repo`, then press **Test**.
 3. In a map: **Copy player link**, send it to your players, then switch on **Live** (radio icon). Changes push after a short delay (default 2 s) and the page polls every 4 s.
 

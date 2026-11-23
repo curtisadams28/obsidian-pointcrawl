@@ -48,6 +48,6 @@ html, body { height: 100%; margin: 0; background: var(--ink); color: var(--bone)
 	<button id="zfit" aria-label="Fit map to screen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
 </div>
 <section class="empty" id="empty"><h1 id="emptyTitle">Connecting…</h1><p id="emptyBody"></p></section>
-<script type="module" src="js/player/src/main.js"></script>
+<script type="module" src="js/player/src/player.js" onerror="document.getElementById('emptyTitle').textContent='The player script didn\u2019t load';document.getElementById('emptyBody').textContent='docs/js/player/src/player.js is missing from the site. Make sure the whole docs folder (including docs/js) is committed and pushed.'"></script>
 </body>
 </html>
