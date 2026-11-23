@@ -10,12 +10,12 @@ export function toBase64(buf: ArrayBuffer): string {
 }
 export const textToBase64 = (t: string) => toBase64(new TextEncoder().encode(t).buffer as ArrayBuffer);
 
-export function playerUrl(c: GHConfig, mapId: string): string {
+export function playerUrl(c: GHConfig, mapId: string, instant = true): string {
 	const [owner, name] = c.repo.split("/");
 	let base = c.pagesUrl.trim();
 	if (!base) base = name?.toLowerCase() === `${owner}.github.io`.toLowerCase() ? `https://${owner}.github.io/` : `https://${owner}.github.io/${name}/`;
 	if (!base.endsWith("/")) base += "/";
-	return `${base}?r=${encodeURIComponent(c.repo)}&b=${encodeURIComponent(c.branch)}&m=${encodeURIComponent(mapId)}`;
+	return `${base}?r=${encodeURIComponent(c.repo)}&b=${encodeURIComponent(c.branch)}&m=${encodeURIComponent(mapId)}${instant ? "" : "&p=0"}`;
 }
 
 const enc = (p: string) => p.split("/").map(encodeURIComponent).join("/");

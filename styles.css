@@ -66,3 +66,4 @@
 .pc-custom-row { display: flex; align-items: center; gap: 10px; }
 .pc-custom-row input[type=text] { flex: 1 1 auto; }
 .pc-custom-thumb { width: 36px; height: 36px; padding: 3px; border-radius: 6px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); }
+.pc-peers { font-size: var(--font-ui-smaller); color: var(--color-green, #2e8b57); margin-right: 8px; cursor: default; }

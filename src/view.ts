@@ -1,8 +1,9 @@
-import { Menu, Notice, TFile, TextFileView, WorkspaceLeaf, setIcon } from "obsidian";
+import { Menu, Notice, TFile, TextFileView, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
 import type PointCrawlPlugin from "./main";
 import { PublishQueue, playerUrl, textToBase64, toBase64 } from "./github";
 import { ConfirmModal, ImagePickerModal, MapSettingsModal, NodeModal } from "./modals";
 import { FogMask } from "./shared/fog";
+import { LiveHost, topicFor } from "./shared/live";
 import { MapCanvas, PointerInfo, RenderNode } from "./shared/mapcanvas";
 import { BUILD_VERSION, TILE_SIZE, buildTiles } from "./tilebuilder";
 import { TiledSource } from "./tiledsource";
@@ -48,6 +49,7 @@ export class PointCrawlView extends TextFileView {
 	private brushSize: number;
 	private brushSoft: number;
 	private live = false;
+	private host: LiveHost | null = null;
 	private lineStyle: LineStyle;
 	private eraserSize: number;
 	private drawUndo: string[] = [];
@@ -64,7 +66,7 @@ export class PointCrawlView extends TextFileView {
 	private selectedId: string | null = null;
 
 	private queue: PublishQueue;
-	private el!: { toolbar: HTMLElement; stage: HTMLElement; overlay: HTMLElement; status: HTMLElement; buttons: Record<string, HTMLElement>; groups: Record<string, HTMLElement> };
+	private el!: { toolbar: HTMLElement; stage: HTMLElement; overlay: HTMLElement; status: HTMLElement; peers: HTMLElement; buttons: Record<string, HTMLElement>; groups: Record<string, HTMLElement> };
 
 	constructor(leaf: WorkspaceLeaf, private plugin: PointCrawlPlugin) {
 		super(leaf);
@@ -107,7 +109,7 @@ export class PointCrawlView extends TextFileView {
 		const toolbar = root.createDiv({ cls: "pc-toolbar" });
 		const stage = root.createDiv({ cls: "pc-stage" });
 		const overlay = stage.createDiv({ cls: "pc-overlay pc-hidden" });
-		this.el = { toolbar, stage, overlay, status: null as any, buttons: {}, groups: {} };
+		this.el = { toolbar, stage, overlay, status: null as any, peers: null as any, buttons: {}, groups: {} };
 		this.buildToolbar();
 
 		this.canvas = new MapCanvas(stage, this.plugin.icons);
@@ -127,6 +129,7 @@ export class PointCrawlView extends TextFileView {
 
 	async onClose() {
 		this.queue.cancel();
+		this.stopHost();
 		this.canvas?.destroy();
 		this.canvas = null;
 		this.buildAbort && (this.buildAbort.aborted = true);
@@ -277,7 +280,7 @@ export class PointCrawlView extends TextFileView {
 	private changed(opts: { image?: boolean } = {}) {
 		this.requestSave();
 		if (opts.image) void this.initMap(); else this.refresh();
-		if (this.live) this.queue.schedule(this.plugin.settings.github.debounceSec * 1000);
+		if (this.live) { this.host?.broadcastSoon(); this.queue.schedule(this.plugin.settings.github.debounceSec * 1000); }
 	}
 
 	/* ------------------------------ toolbar ------------------------------ */
@@ -336,6 +339,7 @@ export class PointCrawlView extends TextFileView {
 		this.btn("undo", "undo", "undo-2", "Undo (Ctrl/Cmd+Z)", () => this.undo());
 
 		const right = (this.el.groups["right"] = this.el.toolbar.createDiv({ cls: "pc-group pc-group-right" }));
+		this.el.peers = right.createSpan({ cls: "pc-peers pc-hidden" });
 		this.el.status = right.createSpan({ cls: "pc-status" });
 		this.btn("right", "link", "link", "Copy player link", () => this.copyLink());
 		this.btn("right", "publish", "cloud-upload", "Publish to player site now", async () => { if (await this.queue.run()) new Notice("Player site updated."); });
@@ -779,7 +783,7 @@ export class PointCrawlView extends TextFileView {
 	linkForPlayers(): string | null {
 		const bad = this.plugin.github.configured();
 		if (bad || !this.map) { new Notice(bad ?? "No map loaded."); return null; }
-		return playerUrl(this.plugin.settings.github, this.map.id);
+		return playerUrl(this.plugin.settings.github, this.map.id, this.plugin.settings.instantUpdates);
 	}
 
 	copyLink() {
@@ -792,8 +796,42 @@ export class PointCrawlView extends TextFileView {
 		if (bad) return void new Notice(bad);
 		this.live = !this.live;
 		this.syncUI();
-		if (this.live) { new Notice("Live updates on. Publishing now…"); void this.queue.run(); }
-		else { this.queue.cancel(); this.setStatus("Live updates off", false); }
+		if (this.live) { new Notice("Live updates on. Publishing now…"); this.startHost(); void this.queue.run(); }
+		else { this.queue.cancel(); this.stopHost(); this.setStatus("Live updates off", false); }
+	}
+
+	/* Direct connections to players: instant updates, with GitHub as the fallback. */
+	private startHost() {
+		const m = this.map;
+		if (!m || this.host || !this.plugin.settings.instantUpdates || typeof RTCPeerConnection === "undefined") return;
+		this.host = new LiveHost({
+			topic: topicFor(m.id),
+			getState: () => this.liveState(),
+			post: async (url, body) => { await requestUrl({ url, method: "POST", body, contentType: "text/plain", throw: false }); },
+			onPeers: (n) => this.setPeers(n),
+		});
+		this.host.start();
+	}
+
+	private stopHost() {
+		this.host?.stop();
+		this.host = null;
+		this.setPeers(0);
+	}
+
+	private setPeers(n: number) {
+		const el = this.el?.peers;
+		if (!el) return;
+		el.toggleClass("pc-hidden", !this.host);
+		el.setText(`⚡ ${n}`);
+		el.setAttr("aria-label", `${n} player${n === 1 ? "" : "s"} connected directly (instant updates)`);
+	}
+
+	private liveState(): string | null {
+		const m = this.map;
+		const rec = m && this.plugin.settings.published[m.id];
+		if (!m || !rec || !this.source || !this.mask) return null;
+		return JSON.stringify(this.buildState(rec.imageFile));
 	}
 
 	async publishNow() { if (await this.queue.run()) new Notice("Player site updated."); }
@@ -840,5 +878,6 @@ export class PointCrawlView extends TextFileView {
 			await this.plugin.saveSettings();
 		}
 		await this.plugin.github.put(`maps/${m.id}/state.json`, textToBase64(JSON.stringify(this.buildState(rec.imageFile))), "Update map state");
+		this.host?.broadcastSoon(0); // first publish: players already connected get the map now
 	}
 }

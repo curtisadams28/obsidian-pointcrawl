@@ -11,6 +11,7 @@ export interface PCSettings {
 	nodeDefaults: NodeDefaults;
 	lineDefaults: LineStyle;
 	eraserSize: number;
+	instantUpdates: boolean;
 	customIcons: CustomIcon[];
 	openOnClick: boolean;
 	openIn: "current" | "tab" | "split";
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: PCSettings = {
 	nodeDefaults: { shape: "pin", color: "#c0392b", iconColor: "#1b1b1b", size: 1, halo: true, visibility: "auto" },
 	lineDefaults: { ...DEFAULT_LINE },
 	eraserSize: 0.02,
+	instantUpdates: true,
 	customIcons: [],
 	openOnClick: true,
 	openIn: "current",
@@ -233,6 +235,8 @@ export class PCSettingTab extends PluginSettingTab {
 			.addText((t) => t.setValue(g.branch).onChange((v) => { g.branch = v.trim() || "pointcrawl-data"; this.save(); }));
 		new Setting(el).setName("Player page URL").setDesc("Leave blank to use https://owner.github.io/name/")
 			.addText((t) => t.setPlaceholder("https://yourname.github.io/pointcrawl-player/").setValue(g.pagesUrl).onChange((v) => { g.pagesUrl = v.trim(); this.save(); }));
+		new Setting(el).setName("Instant updates (peer-to-peer)").setDesc("While Live is on, players' browsers connect directly to Obsidian so changes arrive in well under a second. Uses the free public ntfy.sh service to set up the connection and Google/Cloudflare STUN to find a route, and nothing else leaves your machine that way. Players whose network blocks it automatically keep the 2-second GitHub updates. Copy the player link again after changing this.")
+			.addToggle((t) => t.setValue(this.s.instantUpdates).onChange((v) => { this.s.instantUpdates = v; this.save(); }));
 		new Setting(el).setName("Published map resolution").setDesc("The map is re-encoded as WebP at this size for players. Your original stays private.")
 			.addDropdown((d) => d.addOptions({ "2048": "2048 px", "3072": "3072 px", "4096": "4096 px", "6144": "6144 px" }).setValue(String(g.publishSide)).onChange((v) => { g.publishSide = +v; this.save(); }));
 		new Setting(el).setName("Live update delay").setDesc("Seconds to wait after your last change before pushing. Lower is snappier. Rapid edits are batched into one push, and GitHub allows roughly 500 writes an hour, so low values are fine for normal play.")

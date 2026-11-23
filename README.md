@@ -45,7 +45,12 @@ What gets published: a re-encoded WebP of the map (never the original), a small 
 
 ### How live updates work
 
-The player page reads `state.json` through the GitHub API, which is never cached, and asks "has it changed?" every 2 seconds. Unchanged replies are free against GitHub's rate limit, and only real changes count (60 an hour per player IP address without a token). If GitHub does rate-limit a player, their page falls back to GitHub's raw file host, which caches for 5+ minutes, and shows **Delayed updates** until the limit resets. The map image itself is a hashed file, so it is never stale.
+With **Live** on, two things run at once:
+
+1. **Instant (peer-to-peer).** Each player's browser opens a direct WebRTC connection to your Obsidian and your changes are sent straight down it, normally in well under a second. The page shows **Live · instant**, and the toolbar shows ⚡ and how many players are connected. It uses two free public services, only to get the connection started: **ntfy.sh** (a few small messages on a topic named after the map) and **Google/Cloudflare STUN** (to find a route). Map data never goes through them. Turn it off with *Settings → Player site → Instant updates*.
+2. **GitHub fallback.** Every change is also pushed to GitHub and each player's page reads it through the GitHub API every 2 seconds (never cached; unchanged replies are free against the rate limit). This covers players whose network blocks peer-to-peer (strict corporate or mobile networks; no free relay service exists for that) and anyone who joins while you're offline. If GitHub rate-limits a player, the page shows **Delayed updates** until it resets.
+
+Direct connections only work while Obsidian is open with Live on, and everyone sees the newest state either way (older updates never overwrite newer ones).
 
 ## Performance notes
 

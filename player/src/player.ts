@@ -1,6 +1,7 @@
 import { maskFromDataURL } from "../../src/shared/fog.js";
 import { IconStore } from "../../src/shared/icons.js";
 import { LoadedImage, loadImage } from "../../src/shared/image.js";
+import { LiveClient, topicFor } from "../../src/shared/live.js";
 import { MapCanvas } from "../../src/shared/mapcanvas.js";
 import { PyramidSource, TileSource } from "../../src/shared/tiles.js";
 import { PublishedState } from "../../src/shared/types.js";
@@ -8,6 +9,7 @@ import { PublishedState } from "../../src/shared/types.js";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const q = new URLSearchParams(location.search);
 const repo = q.get("r"), branch = q.get("b") || "pointcrawl-data", mapId = q.get("m");
+const p2pEnabled = q.get("p") !== "0";
 const pollMs = Math.max(1, Math.min(60, Number(q.get("poll")) || 2)) * 1000;
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const maxSide = navigator.maxTouchPoints > 0 ? 4096 : 8192;
@@ -42,8 +44,21 @@ function start(repo: string, mapId: string) {
 	let source: TileSource | null = null;
 	let lastRev = -1, imageFile = "", lastOk = 0, failures = 0, haveMap = false;
 
+	let p2p = false, slowPoll = false, chipOk = false;
 	const setChip = (kind: "live" | "stale" | "error", text: string) => {
 		chip.dataset.kind = kind; chipText.textContent = text; chip.hidden = false;
+	};
+	const paintChip = () => {
+		if (p2p) setChip("live", "Live · instant");
+		else if (chipOk) setChip(slowPoll ? "stale" : "live", slowPoll ? "Delayed updates" : "Live");
+	};
+
+	// state arrives from two places (direct connection, GitHub polling); apply them one at a time, newest wins
+	let chain: Promise<void> = Promise.resolve();
+	const submit = (st: PublishedState) => {
+		const run = chain.then(() => (st.rev > lastRev ? apply(st) : undefined));
+		chain = run.catch(() => undefined);
+		return run;
 	};
 
 	// GitHub's raw host caches files for 5+ minutes, so live state comes from the API (never cached,
@@ -110,19 +125,29 @@ function start(repo: string, mapId: string) {
 			slow = r.slow;
 			if (r.status === "none") {
 				if (!haveMap) showEmpty("Waiting for the GM", "No map has been shared yet. This page will update by itself the moment one is.");
-			} else if (r.st && r.st.rev !== lastRev) await apply(r.st);
+			} else if (r.st) await submit(r.st);
 			failures = 0; lastOk = Date.now();
-			setChip(slow ? "stale" : "live", slow ? "Delayed updates" : r.status === "none" ? "Connected" : "Live");
+			slowPoll = slow; chipOk = true;
+			if (r.status === "none" && !p2p) setChip("live", "Connected"); else paintChip();
 		} catch {
 			failures++;
 			setChip(haveMap ? "stale" : "error", haveMap ? "Reconnecting…" : "Can't reach the map");
 			if (!haveMap && failures > 2) showEmpty("Can't reach the map", "Check your connection, or ask the GM to confirm the player link and that the repository is public.");
 		}
-		const wait = document.hidden ? 15000 : slow ? Math.max(pollMs, 5000) : pollMs * Math.min(4, 1 + Math.floor(failures / 3));
+		const wait = p2p ? 20000 : document.hidden ? 15000 : slow ? Math.max(pollMs, 5000) : pollMs * Math.min(4, 1 + Math.floor(failures / 3));
 		setTimeout(tick, wait);
 	}
 
 	document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - lastOk > pollMs) void tick(); });
 	showEmpty("Connecting…", "");
 	void tick();
+
+	// instant updates straight from the GM's Obsidian; polling above stays as the fallback
+	if (p2pEnabled && typeof RTCPeerConnection !== "undefined") {
+		new LiveClient({
+			topic: topicFor(mapId),
+			onState: (json) => { try { void submit(JSON.parse(json) as PublishedState).catch(() => undefined); } catch { /* ignore bad frame */ } },
+			onStatus: (on) => { p2p = on; paintChip(); },
+		}).start();
+	}
 }
