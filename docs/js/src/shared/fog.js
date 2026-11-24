@@ -114,6 +114,7 @@ let baseTextures = null;
 export class FogRenderer {
     constructor() {
         this.buf = document.createElement("canvas");
+        this.alphaBuf = document.createElement("canvas");
         this.bctx = this.buf.getContext("2d");
         this.tinted = new Map();
         this.patterns = new Map();
@@ -152,7 +153,7 @@ export class FogRenderer {
     }
     /** True if the fog needs to keep re-rendering over time. */
     get animated() { return this._animated; }
-    draw(ctx, mask, v, W, H, look, opacity, timeSec) {
+    draw(ctx, mask, v, W, H, look, opacity, timeSec, fillOutside = false) {
         this._animated = look.animate;
         const q = 0.5;
         const bw = Math.max(2, Math.ceil(v.vw * q)), bh = Math.max(2, Math.ceil(v.vh * q));
@@ -190,8 +191,36 @@ export class FogRenderer {
         }
         b.setTransform(1, 0, 0, 1, 0, 0);
         b.globalAlpha = 1;
+        const mx = v.tx * q, my = v.ty * q, mw = W * v.zoom * q, mh = H * v.zoom * q;
         b.globalCompositeOperation = "destination-in";
-        b.drawImage(mask, v.tx * q, v.ty * q, W * v.zoom * q, H * v.zoom * q);
+        if (fillOutside) {
+            // alpha = the mask over the map, fully opaque everywhere else, so fog covers the whole screen
+            const a = this.alphaBuf;
+            if (a.width !== bw || a.height !== bh) {
+                a.width = bw;
+                a.height = bh;
+            }
+            const g = a.getContext("2d");
+            g.setTransform(1, 0, 0, 1, 0, 0);
+            g.globalCompositeOperation = "source-over";
+            g.imageSmoothingQuality = "high";
+            g.clearRect(0, 0, bw, bh);
+            g.drawImage(mask, mx, my, mw, mh);
+            // fill everything outside the map, adding (not blending) so the edge pixels don't leave a hairline
+            g.save();
+            g.beginPath();
+            g.rect(0, 0, bw, bh);
+            g.rect(mx, my, mw, mh);
+            g.clip("evenodd");
+            g.globalCompositeOperation = "lighter";
+            g.fillStyle = "#fff";
+            g.fillRect(0, 0, bw, bh);
+            g.restore();
+            b.drawImage(a, 0, 0);
+        }
+        else {
+            b.drawImage(mask, mx, my, mw, mh);
+        }
         b.globalCompositeOperation = "source-over";
         ctx.save();
         ctx.globalAlpha = opacity;

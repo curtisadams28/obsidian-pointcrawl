@@ -84,7 +84,7 @@ export default class PointCrawlPlugin extends Plugin {
 			nodeDefaults: { ...DEFAULT_SETTINGS.nodeDefaults, ...legacy, ...(saved.nodeDefaults ?? {}) },
 			lineDefaults: { ...DEFAULT_SETTINGS.lineDefaults, ...(saved.lineDefaults ?? {}) },
 			customIcons: saved.customIcons ?? [],
-			mapDefaults: { ...DEFAULT_SETTINGS.mapDefaults, ...(saved.mapDefaults ?? {}), fogLook: { ...DEFAULT_SETTINGS.mapDefaults.fogLook, ...(saved.mapDefaults?.fogLook ?? {}) } },
+			mapDefaults: { ...DEFAULT_SETTINGS.mapDefaults, ...(saved.mapDefaults ?? {}), fogLook: { ...DEFAULT_SETTINGS.mapDefaults.fogLook, ...(saved.mapDefaults?.fogLook ?? {}) }, scale: { ...DEFAULT_SETTINGS.mapDefaults.scale, ...(saved.mapDefaults?.scale ?? {}) } },
 			github: { ...DEFAULT_SETTINGS.github, ...(saved.github ?? {}) },
 			published: saved.published ?? {},
 		};

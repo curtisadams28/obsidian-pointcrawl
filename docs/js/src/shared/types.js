@@ -12,6 +12,7 @@ export const DEFAULT_FOG_LOOK = {
     animate: true,
     speed: 1,
 };
+export const DEFAULT_SCALE = { mapWidth: 100, unit: "miles", show: true };
 export const DEFAULT_MAP_SETTINGS = {
     labelMode: "hover",
     labelSize: 14,
@@ -19,6 +20,7 @@ export const DEFAULT_MAP_SETTINGS = {
     nodeScaling: "fixed",
     hideNodesInFog: true,
     fogLook: { ...DEFAULT_FOG_LOOK },
+    scale: { ...DEFAULT_SCALE },
 };
 export function uid() {
     return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);

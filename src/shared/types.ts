@@ -52,6 +52,14 @@ export interface FogData {
 	strokes: FogStroke[];
 }
 
+export interface MapScale {
+	/** How far the full width of the image is, in `unit`. */
+	mapWidth: number;
+	/** A preset id ("miles", "km", ...) or any custom label. */
+	unit: string;
+	show: boolean;
+}
+
 export interface MapSettings {
 	labelMode: "hover" | "always";
 	labelSize: number;
@@ -59,6 +67,7 @@ export interface MapSettings {
 	nodeScaling: "fixed" | "scale";
 	hideNodesInFog: boolean;
 	fogLook: FogLook;
+	scale: MapScale;
 }
 
 export type DashStyle = "solid" | "dashed" | "dotted" | "dashdot";
@@ -112,7 +121,7 @@ export interface PublishedState {
 	customIcons?: Record<string, { src: string; raw: boolean }>;
 	/** PNG data URL, alpha = fog amount. null when fog is disabled. */
 	fogMask: string | null;
-	settings: Pick<MapSettings, "labelMode" | "labelSize" | "pinSize" | "nodeScaling" | "fogLook">;
+	settings: Pick<MapSettings, "labelMode" | "labelSize" | "pinSize" | "nodeScaling" | "fogLook" | "scale">;
 }
 
 export const DEFAULT_STYLE: NodeStyle = {
@@ -132,6 +141,8 @@ export const DEFAULT_FOG_LOOK: FogLook = {
 	speed: 1,
 };
 
+export const DEFAULT_SCALE: MapScale = { mapWidth: 100, unit: "miles", show: true };
+
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
 	labelMode: "hover",
 	labelSize: 14,
@@ -139,6 +150,7 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
 	nodeScaling: "fixed",
 	hideNodesInFog: true,
 	fogLook: { ...DEFAULT_FOG_LOOK },
+	scale: { ...DEFAULT_SCALE },
 };
 
 export function uid(): string {

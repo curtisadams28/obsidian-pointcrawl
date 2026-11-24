@@ -14,7 +14,7 @@ Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins
 ## Using it
 
 1. Create a map: ribbon pin icon, or right-click a **folder** (map goes there) or an **image** in the file explorer → *New point crawl map*. It creates a `.pointcrawl` file.
-2. **Move around**: left-drag the map, mouse wheel / pinch to zoom. (With a drawing or fog tool active, hold Space or middle-drag to pan.)
+2. **Move around**: left-drag the map, mouse wheel / pinch to zoom. **Right-drag pans with any tool selected** (the cursor becomes a grabbing hand and the tool is still selected when you let go). A right-click only opens the menu if you didn't drag. Space + left-drag and middle-drag also pan.
 3. **Edit mode**
    - **Nodes**: right-click the map → *Add node here* (or double-click). Drag to move, right-click a node for Edit / Duplicate / Delete, Ctrl/Cmd-click opens its note.
    - **Pen** (Illustrator-style): click for a corner, click-and-drag for a curve with handles. Enter, double-click or right-click finishes; click the first point to close the shape; Backspace removes the last point; Esc cancels.
@@ -22,12 +22,17 @@ Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins
    - **Eraser**: trims freehand lines where you rub; pen lines are removed whole. `[` and `]` resize it.
    - Line colour, width and **solid / dashed / dotted / dash-dot** are in the toolbar. Click a line with the Select tool to restyle or delete it. Ctrl/Cmd+Z undoes.
    - **Fog**: Reveal and Add-fog brushes, undo, fog-all / clear-all.
-4. **View mode**: clicking a pin opens its note.
-5. **Player preview** (people icon): exactly what players see.
+4. **Ruler** (toolbar, also on the player page): drag to measure, Shift+drag to add another leg, click or Esc to clear. Distances use the map's scale.
+5. **View mode**: clicking a pin opens its note.
+6. **Player preview** (people icon): exactly what players see, with fog covering the whole screen.
 
 Lines are stored as plain SVG path data, sit under the fog (so players only see what's revealed), and are sent to the player page.
 
 Visibility per node: *Once its spot is revealed* (default), *Always*, or *GM only*.
+
+## Scale
+
+Images come in all sizes, so each map has its own scale (map settings → **Scale**): the **unit** (miles by default; also kilometres, leagues, feet, yards, metres, or your own like "days of travel") and the **map width**, meaning how far the full width of the image is. Or press **Calibrate with ruler…**, drag a line between two points whose real distance you know, and type that distance. The scale bar in the corner (shown to players too) updates as you zoom, and miles/kilometres switch to feet/metres when you zoom far in. Defaults for new maps are under *Settings → General*.
 
 ## Settings
 
@@ -47,8 +52,8 @@ What gets published: a re-encoded WebP of the map (never the original), a small 
 
 With **Live** on, two things run at once:
 
-1. **Instant (peer-to-peer).** Each player's browser opens a direct WebRTC connection to your Obsidian and your changes are sent straight down it, normally in well under a second. The page shows **Live · instant**, and the toolbar shows ⚡ and how many players are connected. It uses two free public services, only to get the connection started: **ntfy.sh** (a few small messages on a topic named after the map) and **Google/Cloudflare STUN** (to find a route). Map data never goes through them. Turn it off with *Settings → Player site → Instant updates*.
-2. **GitHub fallback.** Every change is also pushed to GitHub and each player's page reads it through the GitHub API every 2 seconds (never cached; unchanged replies are free against the rate limit). This covers players whose network blocks peer-to-peer (strict corporate or mobile networks; no free relay service exists for that) and anyone who joins while you're offline. If GitHub rate-limits a player, the page shows **Delayed updates** until it resets.
+1. **Instant (peer-to-peer).** Each player's browser opens a direct WebRTC connection to your Obsidian and your changes are sent straight down it, normally in well under a second. The toolbar shows ⚡ and how many players are connected. The player page shows nothing while all is well, and only displays a small notice at the top if the connection is lost or delayed. It uses two free public services, only to get the connection started: **ntfy.sh** (a few small messages on a topic named after the map) and **Google/Cloudflare STUN** (to find a route). Map data never goes through them. Turn it off with *Settings → Player site → Instant updates*.
+2. **GitHub fallback.** Every change is also pushed to GitHub and each player's page reads it through the GitHub API every 2 seconds (never cached; unchanged replies are free against the rate limit). This covers players whose network blocks peer-to-peer (strict corporate or mobile networks; no free relay service exists for that) and anyone who joins while you're offline. If GitHub rate-limits a player, the page shows a small **Delayed updates** notice until it resets.
 
 Direct connections only work while Obsidian is open with Live on, and everyone sees the newest state either way (older updates never overwrite newer ones).
 

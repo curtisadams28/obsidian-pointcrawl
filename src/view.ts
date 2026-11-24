@@ -1,15 +1,16 @@
 import { Menu, Notice, TFile, TextFileView, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
 import type PointCrawlPlugin from "./main";
 import { PublishQueue, playerUrl, textToBase64, toBase64 } from "./github";
-import { ConfirmModal, ImagePickerModal, MapSettingsModal, NodeModal } from "./modals";
+import { CalibrateModal, ConfirmModal, ImagePickerModal, MapSettingsModal, NodeModal } from "./modals";
 import { FogMask } from "./shared/fog";
 import { LiveHost, topicFor } from "./shared/live";
+import { unitShort } from "./shared/scale";
 import { MapCanvas, PointerInfo, RenderNode } from "./shared/mapcanvas";
 import { BUILD_VERSION, TILE_SIZE, buildTiles } from "./tilebuilder";
 import { TiledSource } from "./tiledsource";
 import { TileMeta } from "./tilestore";
 import { applyLineStyle, eraseFree, penD, simplify, smoothD } from "./shared/drawing";
-import { DEFAULT_FOG_LOOK, DEFAULT_MAP_SETTINGS, DashStyle, Drawing, FogStroke, LineStyle, MapFile, PCNode, PenAnchor, PublishedState, uid } from "./shared/types";
+import { DEFAULT_SCALE, DEFAULT_FOG_LOOK, DEFAULT_MAP_SETTINGS, DashStyle, Drawing, FogStroke, LineStyle, MapFile, PCNode, PenAnchor, PublishedState, uid } from "./shared/types";
 
 export const VIEW_TYPE = "pointcrawl-map";
 type Mode = "edit" | "view" | "player";
@@ -31,7 +32,7 @@ export function normalizeMap(raw: any, plugin: PointCrawlPlugin): MapFile {
 		nodes: Array.isArray(raw.nodes) ? raw.nodes : [],
 		drawings: Array.isArray(raw.drawings) ? raw.drawings : [],
 		fog: { enabled: raw.fog?.enabled ?? true, base: raw.fog?.base ?? "fogged", strokes: Array.isArray(raw.fog?.strokes) ? raw.fog.strokes : [] },
-		settings: { ...DEFAULT_MAP_SETTINGS, ...d, ...(raw.settings ?? {}), fogLook: { ...DEFAULT_FOG_LOOK, ...d.fogLook, ...(raw.settings?.fogLook ?? {}) } },
+		settings: { ...DEFAULT_MAP_SETTINGS, ...d, ...(raw.settings ?? {}), fogLook: { ...DEFAULT_FOG_LOOK, ...d.fogLook, ...(raw.settings?.fogLook ?? {}) }, scale: { ...DEFAULT_SCALE, ...d.scale, ...(raw.settings?.scale ?? {}) } },
 	};
 }
 
@@ -268,6 +269,8 @@ export class PointCrawlView extends TextFileView {
 		c.fogOpacity = this.mode === "player" ? m.settings.fogLook.density : this.plugin.settings.editorFogOpacity;
 		c.brush = edit && FOG_TOOLS.includes(this.tool) ? { r: this.brushSize } : edit && this.tool === "erase" ? { r: this.eraserSize } : null;
 		c.toolCursor = edit && (this.tool === "pen" || this.tool === "free") ? "crosshair" : null;
+		c.scale = m.settings.scale;
+		c.fogOutside = this.mode === "player";
 		c.drawings = m.drawings;
 		c.selectedDrawingId = edit ? this.selDrawing : null;
 		c.drawOverlay = edit ? this.drawToolOverlay : undefined;
@@ -344,6 +347,7 @@ export class PointCrawlView extends TextFileView {
 		this.btn("right", "link", "link", "Copy player link", () => this.copyLink());
 		this.btn("right", "publish", "cloud-upload", "Publish to player site now", async () => { if (await this.queue.run()) new Notice("Player site updated."); });
 		this.btn("right", "live", "radio", "Live updates to player site", () => this.toggleLive());
+		this.btn("right", "ruler", "ruler", "Ruler: drag to measure, Shift+drag to add a leg, Esc to clear", () => this.setRuler(!this.canvas?.rulerActive));
 		this.btn("right", "fit", "maximize", "Fit map to window", () => this.canvas?.fit());
 		this.btn("right", "settings", "settings", "Map settings", () => this.openMapSettings());
 	}
@@ -364,6 +368,7 @@ export class PointCrawlView extends TextFileView {
 		for (const k of ["edit", "view", "player"]) b[k].toggleClass("is-active", this.mode === k);
 		for (const k of ["select", "pen", "free", "erase", "reveal", "hide"]) b[k].toggleClass("is-active", this.tool === k);
 		b["live"].toggleClass("is-active", this.live);
+		b["ruler"].toggleClass("is-active", !!this.canvas?.rulerActive);
 		const edit = this.mode === "edit";
 		const fogOn = !!this.map?.fog.enabled;
 		const fogTool = FOG_TOOLS.includes(this.tool);
@@ -387,6 +392,7 @@ export class PointCrawlView extends TextFileView {
 	}
 	private setTool(t: Tool) {
 		this.finishPen();
+		if (this.canvas?.rulerActive) this.setRuler(false);
 		this.tool = t;
 		if (t !== "select") { this.selectedId = null; this.selDrawing = null; }
 		this.syncUI(); this.refresh();
@@ -407,6 +413,8 @@ export class PointCrawlView extends TextFileView {
 
 	private bindCanvas(c: MapCanvas) {
 		c.el.addEventListener("pointerdown", () => this.contentEl.focus({ preventScroll: true }));
+
+		c.onRulerDone = (len) => this.onRulerDone(len);
 
 		c.onPointerDown = (p) => {
 			if (this.mode !== "edit" || !this.map) return false;
@@ -513,6 +521,7 @@ export class PointCrawlView extends TextFileView {
 		if (e.key === " " && this.canvas) { this.canvas.spaceHeld = true; e.preventDefault(); }
 		else if (e.key === "Enter" && this.pen) { e.preventDefault(); this.finishPen(); }
 		else if (e.key === "Escape") {
+			if (this.canvas?.rulerActive) { if (this.canvas.hasRuler) this.canvas.clearRuler(); else this.setRuler(false); return; }
 			if (this.pen) { this.pen = null; this.canvas?.requestDraw(); } else { this.selectedId = null; this.selDrawing = null; this.syncUI(); this.refresh(); }
 		}
 		else if ((e.key === "Delete" || e.key === "Backspace") && edit) {
@@ -770,11 +779,36 @@ export class PointCrawlView extends TextFileView {
 		}).open();
 	}
 
+	/* ------------------------------ ruler & scale ------------------------ */
+
+	private calibrating = false;
+
+	private setRuler(on: boolean) {
+		if (on) this.finishPen();
+		if (!on) this.calibrating = false;
+		this.canvas?.setRulerActive(on);
+		this.syncUI();
+	}
+
+	private startCalibrate() {
+		this.calibrating = true;
+		this.setRuler(true);
+		this.calibrating = true;
+		new Notice("Drag a line between two points on the map whose real distance you know.", 8000);
+	}
+
+	private onRulerDone(len: number) {
+		if (!this.calibrating || !this.map) return;
+		this.calibrating = false;
+		const sc = this.map.settings.scale;
+		new CalibrateModal(this.app, sc.unit, (dist) => { sc.mapWidth = Math.round((dist / len) * 100) / 100; this.setRuler(false); this.changed(); new Notice(`Scale set: the map is ${sc.mapWidth} ${unitShort(sc.unit)} wide.`); }, () => this.setRuler(false)).open();
+	}
+
 	/* ------------------------------ settings ----------------------------- */
 
 	private openMapSettings() {
 		if (!this.map) return;
-		new MapSettingsModal(this.app, this.plugin, this.map, (reload) => { this.syncUI(); this.setDisplayName(); this.changed({ image: reload }); }).open();
+		new MapSettingsModal(this.app, this.plugin, this.map, (reload) => { this.syncUI(); this.setDisplayName(); this.changed({ image: reload }); }, () => this.startCalibrate()).open();
 	}
 	private setDisplayName() { /* tab title follows the file name; map name is shown to players */ }
 
@@ -851,7 +885,7 @@ export class PointCrawlView extends TextFileView {
 			drawings: m.drawings.map((d) => ({ id: d.id, style: d.style, d: d.d })),
 			customIcons,
 			fogMask: m.fog.enabled && this.mask ? this.mask.toDataURL(512) : null,
-			settings: { labelMode: m.settings.labelMode, labelSize: m.settings.labelSize, pinSize: m.settings.pinSize, nodeScaling: m.settings.nodeScaling, fogLook: m.settings.fogLook },
+			settings: { labelMode: m.settings.labelMode, labelSize: m.settings.labelSize, pinSize: m.settings.pinSize, nodeScaling: m.settings.nodeScaling, fogLook: m.settings.fogLook, scale: m.settings.scale },
 		};
 	}
 

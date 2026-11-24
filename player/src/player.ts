@@ -15,7 +15,18 @@ const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const maxSide = navigator.maxTouchPoints > 0 ? 4096 : 8192;
 
 const stage = $("stage"), emptyEl = $("empty"), emptyTitle = $("emptyTitle"), emptyBody = $("emptyBody");
-const plaque = $("plaque"), chip = $("chip"), chipText = $("chipText");
+const chip = $("chip"), chipText = $("chipText");
+
+/** Read the device's safe-area insets (notch, home bar) so on-canvas UI stays clear of them. */
+function safeInsets() {
+	const probe = document.createElement("div");
+	probe.style.cssText = "position:fixed;visibility:hidden;padding:env(safe-area-inset-bottom,0px) 0 0 env(safe-area-inset-left,0px)";
+	document.body.appendChild(probe);
+	const cs = getComputedStyle(probe);
+	const r = { x: 14 + (parseFloat(cs.paddingLeft) || 0), y: 14 + (parseFloat(cs.paddingTop) || 0) };
+	probe.remove();
+	return r;
+}
 
 function showEmpty(title: string, body: string) {
 	emptyTitle.textContent = title; emptyBody.textContent = body;
@@ -35,22 +46,35 @@ function start(repo: string, mapId: string) {
 	const canvas = new MapCanvas(stage, icons);
 	canvas.fontFamily = '"Atkinson Hyperlegible", system-ui, sans-serif';
 	canvas.maxZoom = 6;
+	canvas.fogOutside = true; // fog covers the whole screen, not just the map image
+	canvas.scaleInset = safeInsets();
 	canvas.onClick = (p) => { canvas.pinnedId = p.node && canvas.pinnedId !== p.node.id ? p.node.id : null; canvas.requestDraw(); };
 
 	$("zin").onclick = () => canvas.zoomBy(1.4);
 	$("zout").onclick = () => canvas.zoomBy(1 / 1.4);
 	$("zfit").onclick = () => canvas.fit();
+	const rulerBtn = $("zruler");
+	rulerBtn.onclick = () => {
+		const on = !canvas.rulerActive;
+		canvas.setRulerActive(on);
+		rulerBtn.setAttribute("aria-pressed", String(on));
+	};
+	window.addEventListener("keydown", (e) => {
+		if (e.key !== "Escape" || !canvas.rulerActive) return;
+		if (canvas.hasRuler) canvas.clearRuler();
+		else { canvas.setRulerActive(false); rulerBtn.setAttribute("aria-pressed", "false"); }
+	});
 
 	let source: TileSource | null = null;
 	let lastRev = -1, imageFile = "", lastOk = 0, failures = 0, haveMap = false;
 
-	let p2p = false, slowPoll = false, chipOk = false;
-	const setChip = (kind: "live" | "stale" | "error", text: string) => {
-		chip.dataset.kind = kind; chipText.textContent = text; chip.hidden = false;
-	};
+	// The notice only shows when something is wrong; a healthy connection shows nothing.
+	let p2p = false, slowPoll = false, trouble = "";
 	const paintChip = () => {
-		if (p2p) setChip("live", "Live · instant");
-		else if (chipOk) setChip(slowPoll ? "stale" : "live", slowPoll ? "Delayed updates" : "Live");
+		const msg = trouble || (slowPoll && !p2p ? "Delayed updates" : "");
+		chip.hidden = !msg;
+		chip.dataset.kind = trouble ? "error" : "stale";
+		chipText.textContent = msg;
 	};
 
 	// state arrives from two places (direct connection, GitHub polling); apply them one at a time, newest wins
@@ -106,12 +130,12 @@ function start(repo: string, mapId: string) {
 		canvas.fogLook = look;
 		canvas.fogOpacity = look.density;
 		canvas.settings = { labelMode: st.settings.labelMode, labelSize: st.settings.labelSize, pinSize: st.settings.pinSize, nodeScaling: st.settings.nodeScaling };
+		if (st.settings.scale) canvas.scale = st.settings.scale;
 		for (const [id, c] of Object.entries(st.customIcons ?? {})) icons.register(id, c.src, c.raw);
 		canvas.drawings = st.drawings ?? [];
 		canvas.nodes = st.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y, title: n.title, style: n.style }));
 		if (canvas.pinnedId && !st.nodes.some((n) => n.id === canvas.pinnedId)) canvas.pinnedId = null;
 		canvas.requestDraw();
-		plaque.textContent = st.name; plaque.hidden = !st.name;
 		document.title = st.name ? `${st.name} · Point crawl` : "Point crawl";
 		emptyEl.hidden = true;
 		haveMap = true;
@@ -127,11 +151,12 @@ function start(repo: string, mapId: string) {
 				if (!haveMap) showEmpty("Waiting for the GM", "No map has been shared yet. This page will update by itself the moment one is.");
 			} else if (r.st) await submit(r.st);
 			failures = 0; lastOk = Date.now();
-			slowPoll = slow; chipOk = true;
-			if (r.status === "none" && !p2p) setChip("live", "Connected"); else paintChip();
+			slowPoll = slow; trouble = "";
+			paintChip();
 		} catch {
 			failures++;
-			setChip(haveMap ? "stale" : "error", haveMap ? "Reconnecting…" : "Can't reach the map");
+			trouble = haveMap ? "Connection lost. Reconnecting…" : "Can't reach the map";
+			paintChip();
 			if (!haveMap && failures > 2) showEmpty("Can't reach the map", "Check your connection, or ask the GM to confirm the player link and that the repository is public.");
 		}
 		const wait = p2p ? 20000 : document.hidden ? 15000 : slow ? Math.max(pollMs, 5000) : pollMs * Math.min(4, 1 + Math.floor(failures / 3));

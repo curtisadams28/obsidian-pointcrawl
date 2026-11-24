@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type PointCrawlPlugin from "./main";
-import { ImagePickerModal, importIconImage, renderStyleEditor } from "./modals";
+import { ImagePickerModal, importIconImage, renderScaleControls, renderStyleEditor } from "./modals";
 import { applyLineStyle, smoothD } from "./shared/drawing";
 import { DEFAULT_LINE, DEFAULT_MAP_SETTINGS, DashStyle, LineStyle, MapSettings, NodeStyle, Visibility, uid } from "./shared/types";
 
@@ -98,6 +98,9 @@ export class PCSettingTab extends PluginSettingTab {
 			.addSlider((sl) => sl.setLimits(16, 64, 1).setValue(md.pinSize).setDynamicTooltip().onChange((v) => { md.pinSize = v; this.save(); }));
 		new Setting(el).setName("Pins when zooming").setDesc("Fixed keeps pins the same size on screen; scale grows and shrinks them with the map.")
 			.addDropdown((d) => d.addOptions({ fixed: "Fixed size", scale: "Scale with map" }).setValue(md.nodeScaling).onChange((v) => { md.nodeScaling = v as MapSettings["nodeScaling"]; this.save(); }));
+
+		new Setting(el).setName("Distance scale").setDesc("Every image is a different size, so each map has its own width. These are just the starting values.").setHeading();
+		renderScaleControls(el, md.scale, this.save);
 	}
 
 	/* ------------------------------ Nodes ------------------------------ */

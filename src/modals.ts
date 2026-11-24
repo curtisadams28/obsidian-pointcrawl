@@ -3,7 +3,8 @@ import type PointCrawlPlugin from "./main";
 import { ICON_DATA } from "./icon-data";
 import { ICON_INDEX } from "./shared/icon-index";
 import { drawGlyph } from "./shared/mapcanvas";
-import { MapFile, NodeStyle, PCNode, Visibility } from "./shared/types";
+import { UNITS, isPresetUnit, unitName } from "./shared/scale";
+import { MapFile, MapScale, NodeStyle, PCNode, Visibility } from "./shared/types";
 
 export const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"];
 
@@ -266,10 +267,59 @@ export class NodeModal extends Modal {
 	onClose() { this.cleanup?.(); this.contentEl.empty(); }
 }
 
+/* ------------------------------ map scale ----------------------------- */
+
+/** Unit + map width controls, shared by the map settings dialog and the plugin defaults. */
+export function renderScaleControls(el: HTMLElement, sc: MapScale, onChange: () => void, extra?: (s: Setting) => void) {
+	new Setting(el).setName("Show scale bar").setDesc("A distance bar in the corner that updates as you zoom. Players see it too.")
+		.addToggle((t) => t.setValue(sc.show).onChange((v) => { sc.show = v; onChange(); }));
+	let customRow!: Setting;
+	let customText = isPresetUnit(sc.unit) ? "" : sc.unit;
+	new Setting(el).setName("Unit").addDropdown((d) => {
+		for (const u of UNITS) d.addOption(u.id, u.label);
+		d.addOption("custom", "Custom…");
+		d.setValue(isPresetUnit(sc.unit) ? sc.unit : "custom");
+		d.onChange((v) => {
+			sc.unit = v === "custom" ? customText || "units" : v;
+			customRow.settingEl.toggleClass("pc-hidden", v !== "custom");
+			onChange();
+		});
+	});
+	customRow = new Setting(el).setName("Custom unit name").setDesc("For example “days of travel” or “hexes”.")
+		.addText((t) => t.setPlaceholder("days of travel").setValue(customText).onChange((v) => { customText = v.trim(); sc.unit = customText || "units"; onChange(); }));
+	customRow.settingEl.toggleClass("pc-hidden", isPresetUnit(sc.unit));
+	const width = new Setting(el).setName("Map width").setDesc("How far the full width of the image is. Images come in all scales, so set this for each map, or use Calibrate with a distance you know.")
+		.addText((t) => { t.inputEl.type = "number"; t.inputEl.min = "0"; t.setValue(String(sc.mapWidth)).onChange((v) => { const n = parseFloat(v); if (n > 0) { sc.mapWidth = n; onChange(); } }); });
+	extra?.(width);
+}
+
+export class CalibrateModal extends Modal {
+	private done = false;
+	constructor(app: App, private unit: string, private onApply: (distance: number) => void, private onCancel: () => void) { super(app); }
+	onOpen() {
+		const el = this.contentEl;
+		el.createEl("h3", { text: "Set the scale" });
+		el.createEl("p", { text: `How far apart are the two points you measured, in ${unitName(this.unit)}?` });
+		const input = el.createEl("input", { type: "number", attr: { min: "0", step: "any", placeholder: "e.g. 24" } });
+		input.addClass("pc-field");
+		const apply = () => {
+			const n = parseFloat(input.value);
+			if (!(n > 0)) return void new Notice("Enter a distance greater than zero.");
+			this.done = true; this.close(); this.onApply(n);
+		};
+		input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); apply(); } });
+		window.setTimeout(() => input.focus(), 30);
+		new Setting(el)
+			.addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
+			.addButton((b) => b.setButtonText("Set scale").setCta().onClick(apply));
+	}
+	onClose() { this.contentEl.empty(); if (!this.done) this.onCancel(); }
+}
+
 /* ---------------------------- map settings ---------------------------- */
 
 export class MapSettingsModal extends Modal {
-	constructor(app: App, private plugin: PointCrawlPlugin, private map: MapFile, private onChange: (reloadImage: boolean) => void) { super(app); }
+	constructor(app: App, private plugin: PointCrawlPlugin, private map: MapFile, private onChange: (reloadImage: boolean) => void, private onCalibrate: () => void) { super(app); }
 
 	onOpen() {
 		const el = this.contentEl, m = this.map, s = m.settings;
@@ -287,6 +337,9 @@ export class MapSettingsModal extends Modal {
 		new Setting(el).setName("Base pin size (px)")
 			.addSlider((sl) => sl.setLimits(16, 64, 1).setValue(s.pinSize).setDynamicTooltip().onChange((v) => { s.pinSize = v; apply(); }));
 		new Setting(el).setName("Pins when zooming").addDropdown((d) => d.addOptions({ fixed: "Fixed size", scale: "Scale with map" }).setValue(s.nodeScaling).onChange((v) => { s.nodeScaling = v as typeof s.nodeScaling; apply(); }));
+
+		new Setting(el).setName("Scale").setHeading();
+		renderScaleControls(el, s.scale, apply, (w) => w.addButton((b) => b.setButtonText("Calibrate with ruler…").onClick(() => { this.close(); this.onCalibrate(); })));
 
 		new Setting(el).setName("Fog of war").setHeading();
 		new Setting(el).setName("Use fog").addToggle((t) => t.setValue(m.fog.enabled).onChange((v) => { m.fog.enabled = v; apply(); }));

@@ -2,7 +2,8 @@ import { FogRenderer } from "./fog.js";
 import { IconStore } from "./icons.js";
 import { TileSource } from "./tiles.js";
 import { applyLineStyle } from "./drawing.js";
-import { FogLook, MapSettings, NodeStyle, RenderDrawing } from "./types.js";
+import { formatDistance, niceBar } from "./scale.js";
+import { DEFAULT_SCALE, FogLook, MapScale, MapSettings, NodeStyle, RenderDrawing } from "./types.js";
 
 export interface RenderNode { id: string; x: number; y: number; title: string; style: NodeStyle; dim?: boolean }
 
@@ -134,7 +135,21 @@ export class MapCanvas {
 
 	private pointers = new Map<number, { x: number; y: number }>();
 	private pointer: { sx: number; sy: number } | null = null;
-	private drag: { kind: "pan" | "tool" | "pinch"; x: number; y: number; moved: boolean; button: number; dist?: number } | null = null;
+	private drag: { kind: "pan" | "tool" | "pinch" | "ruler"; x: number; y: number; moved: boolean; button: number; dist?: number; grab?: boolean } | null = null;
+	private panGrab = false;
+	private avgColor: string | null = null;
+	private lastPointerType = "mouse";
+
+	/** Map scale (for the scale bar and the ruler). */
+	scale: MapScale = { ...DEFAULT_SCALE };
+	/** Cover everything outside the map with fog too (player view). */
+	fogOutside = false;
+	/** Distance in px from the left / bottom edge for the scale bar. */
+	scaleInset = { x: 14, y: 14 };
+	rulerActive = false;
+	/** Fires when a measurement is completed; `lengthU` is the total in map units (1 = image width). */
+	onRulerDone?: (lengthU: number) => void;
+	private ruler: { pts: number[]; cursor: [number, number] | null; dragging: boolean; base: number } | null = null;
 
 	constructor(private host: HTMLElement, private icons: IconStore) {
 		this.el = document.createElement("canvas");
@@ -154,7 +169,9 @@ export class MapCanvas {
 		e.addEventListener("pointerleave", this.pleave);
 		e.addEventListener("wheel", this.wheel, { passive: false });
 		e.addEventListener("dblclick", (ev) => this.onDblClick?.(this.info(ev)));
-		e.addEventListener("contextmenu", (ev) => { ev.preventDefault(); this.onContext?.(this.info(ev), ev); });
+		// Mouse: the menu is opened on release, and only if the right button wasn't dragged (see pup).
+		// Touch / pen long-press has no button release to wait for, so it opens straight away.
+		e.addEventListener("contextmenu", (ev) => { ev.preventDefault(); if (this.lastPointerType !== "mouse") this.onContext?.(this.info(ev), ev); });
 		this.resize();
 	}
 
@@ -171,6 +188,7 @@ export class MapCanvas {
 	setSource(src: TileSource | null) {
 		this.source?.setUpdateListener(null);
 		this.source = src;
+		this.avgColor = null;
 		this.dims = src ? { w: src.w, h: src.h } : null;
 		src?.setUpdateListener(() => this.requestDraw());
 		this.fit();
@@ -230,11 +248,11 @@ export class MapCanvas {
 
 	/* ----------------------------- input ------------------------------ */
 
-	private info(e: MouseEvent): PointerInfo {
+	private info(e: MouseEvent, button = e.button): PointerInfo {
 		const r = this.el.getBoundingClientRect();
 		const sx = e.clientX - r.left, sy = e.clientY - r.top;
 		const { nx, ny } = this.toNorm(sx, sy);
-		return { sx, sy, nx, ny, ux: nx, uy: ny * (this.dims ? this.dims.h / this.dims.w : 1), node: this.hitTest(sx, sy), button: e.button, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, alt: e.altKey, spaceHeld: this.spaceHeld };
+		return { sx, sy, nx, ny, ux: nx, uy: ny * (this.dims ? this.dims.h / this.dims.w : 1), node: this.hitTest(sx, sy), button, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, alt: e.altKey, spaceHeld: this.spaceHeld };
 	}
 
 	private pdown = (e: PointerEvent) => {
@@ -242,15 +260,25 @@ export class MapCanvas {
 		this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 		if (this.pointers.size === 2) {
 			if (this.drag?.kind === "tool") this.onToolUp?.(this.info(e));
+			if (this.ruler) this.ruler.dragging = false;
 			const [a, b] = [...this.pointers.values()];
 			this.drag = { kind: "pinch", x: 0, y: 0, moved: true, button: 0, dist: Math.hypot(a.x - b.x, a.y - b.y) };
 			return;
 		}
-		const info = this.info(e);
-		if (e.button === 1) e.preventDefault();
-		const claim = e.button === 0 && !info.spaceHeld && !!this.onPointerDown?.(info);
-		this.drag = { kind: claim ? "tool" : "pan", x: e.clientX, y: e.clientY, moved: false, button: e.button };
-		if (e.button === 2) this.drag = null;
+		this.lastPointerType = e.pointerType;
+		// Ctrl+click is a right click on macOS
+		const button = e.button === 0 && e.ctrlKey && /Mac/.test(navigator.platform) ? 2 : e.button;
+		const info = this.info(e, button);
+		if (button === 1 || button === 2) e.preventDefault();
+		if (button === 0 && !info.spaceHeld && this.rulerActive) {
+			this.rulerDown(info);
+			this.drag = { kind: "ruler", x: e.clientX, y: e.clientY, moved: false, button };
+			this.requestDraw();
+			return;
+		}
+		const claim = button === 0 && !info.spaceHeld && !!this.onPointerDown?.(info);
+		// right / middle button, or Space + left, pans with whichever tool is selected
+		this.drag = { kind: claim ? "tool" : "pan", x: e.clientX, y: e.clientY, moved: false, button, grab: button !== 0 || info.spaceHeld };
 		this.requestDraw();
 	};
 
@@ -271,7 +299,10 @@ export class MapCanvas {
 			if (d.moved) {
 				this.tx += e.clientX - prev.x; this.ty += e.clientY - prev.y;
 				this.clamp();
+				if (d.grab) this.panGrab = true;
 			}
+		} else if (d?.kind === "ruler") {
+			if (this.ruler) this.ruler.cursor = [this.info(e).ux, this.info(e).uy];
 		} else if (d?.kind === "tool") {
 			d.moved = true;
 			this.onToolMove?.(this.info(e));
@@ -289,10 +320,16 @@ export class MapCanvas {
 		const d = this.drag;
 		if (!d) return;
 		if (d.kind === "pinch") { if (this.pointers.size < 2) this.drag = null; return; }
-		const info = this.info(e);
+		const info = this.info(e, d.button);
 		if (d.kind === "tool") this.onToolUp?.(info);
-		else if (!d.moved && d.button === 0 && e.type === "pointerup") this.onClick?.(info);
+		else if (d.kind === "ruler") this.rulerUp();
+		else if (!d.moved && e.type === "pointerup") {
+			if (d.button === 0) this.onClick?.(info);
+			else if (d.button === 2) this.onContext?.(info, e); // a plain right click, not a drag
+		}
 		this.drag = null;
+		this.panGrab = false;
+		this.updateCursor();
 		this.requestDraw();
 	};
 
@@ -308,7 +345,7 @@ export class MapCanvas {
 	get unitScale() { return this.zoom * (this.dims?.w ?? 1); }
 
 	updateCursor() {
-		this.el.style.cursor = this.brush ? "none" : this.toolCursor ?? (this.hoverId ? "pointer" : "default");
+		this.el.style.cursor = this.panGrab ? "grabbing" : this.rulerActive ? "crosshair" : this.brush ? "none" : this.toolCursor ?? (this.hoverId ? "pointer" : "default");
 	}
 
 	private pathFor(d: RenderDrawing): Path2D {
@@ -403,11 +440,12 @@ export class MapCanvas {
 		ctx.clearRect(0, 0, this.vw, this.vh);
 		if (!im) return;
 
+		if (this.fogOutside && this.fogMask) this.fillOutsideTint();
 		this.drawTiles();
 		this.drawDrawings();
 
 		if (this.fogMask && this.fogOpacity > 0) {
-			this.fogRenderer.draw(ctx, this.fogMask, { zoom: this.zoom, tx: this.tx, ty: this.ty, vw: this.vw, vh: this.vh }, im.w, im.h, this.fogLook, this.fogOpacity, t);
+			this.fogRenderer.draw(ctx, this.fogMask, { zoom: this.zoom, tx: this.tx, ty: this.ty, vw: this.vw, vh: this.vh }, im.w, im.h, this.fogLook, this.fogOpacity, t, this.fogOutside);
 		}
 
 		const arr = this.ordered();
@@ -425,12 +463,141 @@ export class MapCanvas {
 			this.drawLabel(n.title, sx, box.y0, box.y1, s);
 		}
 
-		if (this.brush && this.pointer) {
+		if (this.brush && this.pointer && !this.panGrab && !this.rulerActive) {
 			const r = this.brush.r * im.w * this.zoom;
 			ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.55)";
 			ctx.beginPath(); ctx.arc(this.pointer.sx, this.pointer.sy, r, 0, Math.PI * 2); ctx.stroke();
 			ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.stroke();
 		}
+		this.drawRuler(ctx);
+		this.drawScaleBar(ctx);
+	}
+
+	/* ------------------------------- ruler ------------------------------ */
+
+	get hasRuler() { return !!this.ruler; }
+
+	setRulerActive(on: boolean) {
+		this.rulerActive = on;
+		if (!on) this.ruler = null;
+		this.updateCursor();
+		this.requestDraw();
+	}
+
+	clearRuler() { this.ruler = null; this.requestDraw(); }
+
+	/** Press-drag-release measures a line. Shift+drag continues from the end of the last one. */
+	private rulerDown(p: PointerInfo) {
+		const r = this.ruler;
+		if (p.shift && r && r.pts.length >= 4) { r.dragging = true; r.base = r.pts.length - 2; r.cursor = [p.ux, p.uy]; return; }
+		this.ruler = { pts: [p.ux, p.uy], cursor: [p.ux, p.uy], dragging: true, base: 0 };
+	}
+
+	private rulerUp() {
+		const r = this.ruler;
+		if (!r) return;
+		r.dragging = false;
+		const from: [number, number] = [r.pts[r.base], r.pts[r.base + 1]];
+		if (!r.cursor || Math.hypot(r.cursor[0] - from[0], r.cursor[1] - from[1]) * this.unitScale < 5) {
+			if (r.pts.length < 4) this.ruler = null; // a plain click clears it
+			r.cursor = null;
+			return;
+		}
+		r.pts.push(r.cursor[0], r.cursor[1]);
+		r.cursor = null;
+		let total = 0;
+		for (let i = 2; i < r.pts.length; i += 2) total += Math.hypot(r.pts[i] - r.pts[i - 2], r.pts[i + 1] - r.pts[i - 1]);
+		this.onRulerDone?.(total);
+	}
+
+	private pill(ctx: CanvasRenderingContext2D, text: string, cx: number, cy: number, fs: number) {
+		ctx.font = `600 ${fs}px ${this.fontFamily}`;
+		const w = ctx.measureText(text).width + 14, h = fs + 9;
+		const x = Math.min(this.vw - w - 4, Math.max(4, cx - w / 2)), y = Math.min(this.vh - h - 4, Math.max(4, cy - h / 2));
+		ctx.save();
+		ctx.fillStyle = "rgba(20,24,30,0.92)";
+		roundRect(ctx, x, y, w, h, 6); ctx.fill();
+		ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1; ctx.stroke();
+		ctx.fillStyle = "#f3f1ec"; ctx.textBaseline = "middle"; ctx.textAlign = "center";
+		ctx.fillText(text, x + w / 2, y + h / 2 + 0.5);
+		ctx.restore();
+	}
+
+	private drawRuler(ctx: CanvasRenderingContext2D) {
+		const r = this.ruler;
+		if (!r || !this.image) return;
+		const pts = r.dragging && r.cursor ? [...r.pts, r.cursor[0], r.cursor[1]] : r.pts;
+		if (pts.length < 4) return;
+		const s = this.unitScale, X = (i: number) => this.tx + pts[i] * s, Y = (i: number) => this.ty + pts[i + 1] * s;
+		ctx.save();
+		ctx.lineJoin = "round"; ctx.lineCap = "round";
+		ctx.beginPath();
+		ctx.moveTo(X(0), Y(0));
+		for (let i = 2; i < pts.length; i += 2) ctx.lineTo(X(i), Y(i));
+		ctx.setLineDash([]); ctx.lineWidth = 5; ctx.strokeStyle = "rgba(0,0,0,0.55)"; ctx.stroke();
+		ctx.setLineDash([9, 6]); ctx.lineWidth = 2.5; ctx.strokeStyle = "#ffffff"; ctx.stroke();
+		ctx.setLineDash([]);
+		for (let i = 0; i < pts.length; i += 2) {
+			ctx.beginPath(); ctx.arc(X(i), Y(i), 4.5, 0, Math.PI * 2);
+			ctx.fillStyle = "#fff"; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(0,0,0,0.7)"; ctx.stroke();
+		}
+		ctx.restore();
+		let total = 0;
+		const segs = (pts.length - 2) / 2;
+		for (let i = 2; i < pts.length; i += 2) {
+			const len = Math.hypot(pts[i] - pts[i - 2], pts[i + 1] - pts[i - 1]);
+			total += len;
+			if (segs > 1) this.pill(ctx, formatDistance(len, this.scale), (X(i) + X(i - 2)) / 2, (Y(i) + Y(i - 2)) / 2, 11);
+		}
+		const last = pts.length - 2;
+		this.pill(ctx, (segs > 1 ? "Total " : "") + formatDistance(total, this.scale), X(last) + 4, Y(last) - 22, 13);
+	}
+
+	/* ----------------------------- scale bar ---------------------------- */
+
+	private drawScaleBar(ctx: CanvasRenderingContext2D) {
+		const sc = this.scale;
+		if (!this.image || !sc || !sc.show || !(sc.mapWidth > 0)) return;
+		const { px, label } = niceBar(sc, sc.mapWidth / this.unitScale);
+		const w = px + 20, h = 36;
+		const x = this.scaleInset.x, y = this.vh - this.scaleInset.y - h;
+		ctx.save();
+		ctx.fillStyle = "rgba(14,19,23,0.72)";
+		roundRect(ctx, x, y, w, h, 7); ctx.fill();
+		ctx.font = `600 12px ${this.fontFamily}`;
+		ctx.fillStyle = "#f3f1ec"; ctx.textBaseline = "alphabetic"; ctx.textAlign = "left";
+		ctx.fillText(label, x + 10, y + 15);
+		const bx = x + 10, by = y + 22;
+		ctx.fillStyle = "#f3f1ec"; ctx.fillRect(bx, by, px / 2, 5);
+		ctx.fillStyle = "#6c747c"; ctx.fillRect(bx + px / 2, by, px / 2, 5);
+		ctx.strokeStyle = "#f3f1ec"; ctx.lineWidth = 1.5;
+		ctx.strokeRect(bx, by, px, 5);
+		ctx.restore();
+	}
+
+	/**
+	 * With fog covering the whole screen, a little of what is under it shows through. Tint the area outside
+	 * the map with the map's average colour so the map's edge doesn't show up as a faint rectangle.
+	 */
+	private fillOutsideTint() {
+		const src = this.source;
+		if (!src) return;
+		if (!this.avgColor) {
+			const L = src.levels.length - 1;
+			const t = src.peek(L, 0, 0) ?? src.get(L, 0, 0);
+			if (!t) return;
+			const mid = document.createElement("canvas"); mid.width = mid.height = 16;
+			const g = mid.getContext("2d", { willReadFrequently: true })!;
+			g.imageSmoothingQuality = "high";
+			g.drawImage(t, 0, 0, 16, 16);
+			const one = document.createElement("canvas"); one.width = one.height = 1;
+			const g1 = one.getContext("2d", { willReadFrequently: true })!;
+			g1.drawImage(mid, 0, 0, 1, 1);
+			const d = g1.getImageData(0, 0, 1, 1).data;
+			this.avgColor = `rgb(${d[0]},${d[1]},${d[2]})`;
+		}
+		this.ctx.fillStyle = this.avgColor;
+		this.ctx.fillRect(0, 0, this.vw, this.vh);
 	}
 
 	/* --------------------------- tiled image --------------------------- */
