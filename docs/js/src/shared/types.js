@@ -4,6 +4,7 @@ export const DEFAULT_STYLE = {
     iconColor: "#1b1b1b",
     size: 1,
     halo: true,
+    iconBg: true,
 };
 export const DEFAULT_LINE = { color: "#5a3b1f", width: 0.0016, dash: "solid" };
 export const DEFAULT_FOG_LOOK = {

@@ -113,60 +113,57 @@ export async function importIconImage(blob: Blob, tintable: boolean): Promise<st
 
 export const toHex = (c: string) => (/^#[0-9a-f]{6}$/i.test(c) ? c.toLowerCase() : "#000000");
 
-/** A colour input with preset swatches, your saved palette, and a button to save the current colour. */
-export function colorField(parent: HTMLElement, pl: PointCrawlPlugin, value: string, onChange: (c: string) => void, presets: string[] = []) {
+/** A colour input with your palette beside it. (Palette colours are added and removed in the plugin settings.) */
+export function colorField(parent: HTMLElement, pl: PointCrawlPlugin, value: string, onChange: (c: string) => void) {
 	const wrap = parent.createDiv({ cls: "pc-colorfield" });
 	const input = wrap.createEl("input", { type: "color" });
 	input.value = toHex(value);
 	const sw = wrap.createDiv({ cls: "pc-swatches pc-wrap" });
 	const set = (c: string) => { input.value = toHex(c); onChange(input.value); };
 	input.addEventListener("input", () => onChange(input.value));
-	const swatch = (c: string, saved: boolean) => {
-		const b = sw.createEl("button", { cls: "pc-swatch", attr: { "aria-label": saved ? `${c} (saved)` : c, title: saved ? "Right-click to remove from palette" : c } });
+	for (const c of pl.settings.palette) {
+		const b = sw.createEl("button", { cls: "pc-swatch", attr: { "aria-label": c } });
 		b.style.background = c;
 		b.addEventListener("click", () => set(c));
-		if (saved) b.addEventListener("contextmenu", (e) => {
-			e.preventDefault();
-			new Menu().addItem((i) => i.setTitle("Remove from palette").setIcon("trash").onClick(async () => { await pl.removePaletteColor(c); render(); })).showAtMouseEvent(e);
-		});
-	};
-	const render = () => {
-		sw.empty();
-		presets.forEach((c) => swatch(c, false));
-		pl.settings.palette.forEach((c) => swatch(c, true));
-		const add = sw.createEl("button", { cls: "pc-swatch pc-swatch-add", text: "+", attr: { "aria-label": "Save this colour to your palette", title: "Save this colour to your palette" } });
-		add.addEventListener("click", async () => { await pl.addPaletteColor(input.value); render(); });
-	};
-	render();
+	}
 	return { set: (c: string) => { input.value = toHex(c); } };
 }
 
-/** Small popover listing the saved palette (used from the toolbar). */
+/** A settings row with a colour picker and your palette beside it. */
+export function colorSetting(el: HTMLElement, pl: PointCrawlPlugin, name: string, value: string, onChange: (c: string) => void, desc?: string): Setting {
+	const s = new Setting(el).setName(name);
+	if (desc) s.setDesc(desc);
+	const sw = s.controlEl.createDiv({ cls: "pc-swatches pc-wrap pc-setting-swatches" });
+	let comp: { setValue(v: string): unknown } | null = null;
+	s.addColorPicker((c) => { comp = c; c.setValue(toHex(value)); c.onChange(onChange); });
+	for (const c of pl.settings.palette) {
+		const b = sw.createEl("button", { cls: "pc-swatch", attr: { "aria-label": c } });
+		b.style.background = c;
+		b.addEventListener("click", () => { comp?.setValue(c); onChange(c); });
+	}
+	return s;
+}
+
+/** Small popover listing your palette (used from the toolbar). */
 export function openPalette(anchor: HTMLElement, pl: PointCrawlPlugin, current: () => string, onPick: (c: string) => void) {
 	document.querySelectorAll(".pc-popover").forEach((e) => e.remove());
 	const pop = document.body.createDiv({ cls: "pc-popover" });
 	const r = anchor.getBoundingClientRect();
 	pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 270)) + "px";
 	pop.style.top = r.bottom + 6 + "px";
-	const render = () => {
-		pop.empty();
-		pop.createDiv({ cls: "pc-pop-title", text: "Saved colours" });
-		const row = pop.createDiv({ cls: "pc-swatches pc-wrap" });
-		if (!pl.settings.palette.length) row.createSpan({ cls: "pc-val", text: "None yet. Save the current colour below." });
-		for (const c of pl.settings.palette) {
-			const b = row.createEl("button", { cls: "pc-swatch", attr: { "aria-label": c, title: "Right-click to remove" } });
-			b.style.background = c;
-			b.addEventListener("click", () => { onPick(c); pop.remove(); });
-			b.addEventListener("contextmenu", (e) => { e.preventDefault(); void pl.removePaletteColor(c).then(render); });
-		}
-		pop.createEl("button", { text: "Save current colour" }).addEventListener("click", async () => { await pl.addPaletteColor(current()); render(); });
-	};
-	render();
+	pop.createDiv({ cls: "pc-pop-title", text: "Palette" });
+	const row = pop.createDiv({ cls: "pc-swatches pc-wrap" });
+	const cur = current().toLowerCase();
+	for (const c of pl.settings.palette) {
+		const b = row.createEl("button", { cls: "pc-swatch", attr: { "aria-label": c } });
+		b.style.background = c;
+		if (c.toLowerCase() === cur) b.addClass("is-current");
+		b.addEventListener("click", () => { onPick(c); pop.remove(); });
+	}
+	pop.createDiv({ cls: "pc-val", text: "Edit your palette in Settings → General." });
 	const close = (e: Event) => { if (!pop.contains(e.target as Node)) { pop.remove(); document.removeEventListener("pointerdown", close, true); } };
 	window.setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
 }
-
-const SWATCHES = ["#c0392b", "#d35400", "#d4a017", "#2e8b57", "#16808d", "#2a6fdb", "#7e57c2", "#c2185b", "#2b2b2b", "#f2f0ea"];
 
 export interface StyleEditorOpts {
 	plugin: PointCrawlPlugin;
@@ -209,7 +206,7 @@ export function renderStyleEditor(parent: HTMLElement, o: StyleEditorOpts): () =
 	}
 
 	// colour
-	colorField(row("Colour"), pl, st.color, (c) => { st.color = c; changed(); }, SWATCHES);
+	colorField(row("Colour"), pl, st.color, (c) => { st.color = c; changed(); });
 
 	// size
 	const sizeCtl = row("Size");
@@ -220,7 +217,12 @@ export function renderStyleEditor(parent: HTMLElement, o: StyleEditorOpts): () =
 
 	// icon colour (pins) / outline (icon only)
 	const icRow = row("Icon colour");
-	colorField(icRow, pl, st.iconColor, (c) => { st.iconColor = c; changed(); }, ["#1b1b1b", "#ffffff"]);
+	colorField(icRow, pl, st.iconColor, (c) => { st.iconColor = c; changed(); });
+	const bgRow = row("Inner circle");
+	const bgBox = bgRow.createEl("input", { type: "checkbox" });
+	bgBox.checked = st.iconBg !== false;
+	bgBox.addEventListener("change", () => { st.iconBg = bgBox.checked; changed(); });
+	bgRow.createSpan({ cls: "pc-val", text: "White circle in the pin head (behind the icon)" });
 	const haloRow = row("Outline");
 	const halo = haloRow.createEl("input", { type: "checkbox" });
 	halo.checked = st.halo;
@@ -241,7 +243,7 @@ export function renderStyleEditor(parent: HTMLElement, o: StyleEditorOpts): () =
 	const cells = new Map<string, HTMLElement>();
 	const items = [{ id: "", label: "No icon", src: "" }, ...pl.allIcons()];
 	for (const it of items) {
-		const c = grid.createEl("button", { cls: "pc-icon-cell", attr: { "aria-label": it.label, title: it.label, "data-q": (it.label + " " + it.id).toLowerCase() } });
+		const c = grid.createEl("button", { cls: "pc-icon-cell", attr: { "aria-label": it.label, "data-q": (it.label + " " + it.id).toLowerCase() } });
 		if (it.id) { const im = c.createEl("img", { attr: { src: it.src, alt: it.label } }); if (pl.isRawIcon(it.id)) im.addClass("is-raw"); } else c.setText("None");
 		c.addEventListener("click", () => { st.icon = it.id || undefined; if (!st.icon && st.shape === "icon") st.shape = "pin"; changed(); });
 		cells.set(it.id, c);
@@ -255,6 +257,7 @@ export function renderStyleEditor(parent: HTMLElement, o: StyleEditorOpts): () =
 		segBtns.pin.toggleClass("is-active", st.shape === "pin");
 		segBtns.icon.toggleClass("is-active", st.shape === "icon");
 		icRow.parentElement!.toggleClass("pc-hidden", !(st.shape === "pin" && !!st.icon));
+		bgRow.parentElement!.toggleClass("pc-hidden", st.shape !== "pin");
 		haloRow.parentElement!.toggleClass("pc-hidden", !(st.shape === "icon" && !!st.icon));
 		cells.forEach((c, id) => c.toggleClass("is-selected", id === (st.icon ?? "")));
 		draw();
@@ -434,13 +437,13 @@ export class TextModal extends Modal {
 			if (key === "bold") b.style.fontWeight = "700"; else b.style.fontStyle = "italic";
 			b.addEventListener("click", () => { t[key] = !t[key]; b.toggleClass("is-active", t[key]); upd(); });
 		}
-		colorField(row("Colour").ctl, this.plugin, t.color, (c) => { t.color = c; upd(); }, ["#2b2118", "#ffffff", "#7a1f1f", "#1b3a6b", "#2e5a2a"]);
+		colorField(row("Colour").ctl, this.plugin, t.color, (c) => { t.color = c; upd(); });
 		slider(row("Size").ctl, 0.008, 0.2, 0.002, () => t.size, (v) => (t.size = v), (v) => pct(v / 0.03));
 		slider(row("Arc").ctl, -360, 360, 5, () => t.arc, (v) => (t.arc = v), (v) => (v === 0 ? "Straight" : `${v}°`));
 
 		// outline
 		slider(row("Outline").ctl, 0, 0.3, 0.01, () => t.outW, (v) => (t.outW = v), (v) => (v === 0 ? "Off" : pct(v)));
-		const o1 = row("Outline colour"); colorField(o1.ctl, this.plugin, t.outColor, (c) => { t.outColor = c; upd(); }, ["#ffffff", "#000000", "#f4ead2"]);
+		const o1 = row("Outline colour"); colorField(o1.ctl, this.plugin, t.outColor, (c) => { t.outColor = c; upd(); });
 		const o2 = row("Outline blur"); slider(o2.ctl, 0, 0.5, 0.01, () => t.outBlur, (v) => (t.outBlur = v), (v) => (v === 0 ? "Sharp" : pct(v)));
 
 		// shadow
@@ -448,7 +451,7 @@ export class TextModal extends Modal {
 		const shOn = sh.createEl("input", { type: "checkbox" });
 		shOn.checked = t.shadow;
 		shOn.addEventListener("change", () => { t.shadow = shOn.checked; upd(); });
-		const s1 = row("Shadow colour"); colorField(s1.ctl, this.plugin, t.shColor, (c) => { t.shColor = c; upd(); }, ["#000000"]);
+		const s1 = row("Shadow colour"); colorField(s1.ctl, this.plugin, t.shColor, (c) => { t.shColor = c; upd(); });
 		const s2 = row("Shadow opacity"); slider(s2.ctl, 0.05, 1, 0.05, () => t.shOpacity, (v) => (t.shOpacity = v), pct);
 		const s3 = row("Shadow blur"); slider(s3.ctl, 0, 0.6, 0.01, () => t.shBlur, (v) => (t.shBlur = v), pct);
 		const s4 = row("Shadow X"); slider(s4.ctl, -0.4, 0.4, 0.01, () => t.shDx, (v) => (t.shDx = v), pct);
@@ -495,7 +498,7 @@ export class MapSettingsModal extends Modal {
 		new Setting(el).setName("Use fog").addToggle((t) => t.setValue(m.fog.enabled).onChange((v) => { m.fog.enabled = v; apply(); }));
 		new Setting(el).setName("Hide nodes under fog from players").setDesc("Nodes set to Always or GM only ignore this.")
 			.addToggle((t) => t.setValue(s.hideNodesInFog).onChange((v) => { s.hideNodesInFog = v; apply(); }));
-		new Setting(el).setName("Fog colour").addColorPicker((c) => c.setValue(s.fogLook.color).onChange((v) => { s.fogLook.color = v; apply(); }));
+		colorSetting(el, this.plugin, "Fog colour", s.fogLook.color, (v) => { s.fogLook.color = v; apply(); });
 		new Setting(el).setName("Density for players").setDesc("1 fully hides the map under fog.")
 			.addSlider((sl) => sl.setLimits(0.4, 1, 0.01).setValue(s.fogLook.density).setDynamicTooltip().onChange((v) => { s.fogLook.density = v; apply(); }));
 		new Setting(el).setName("Animate fog").addToggle((t) => t.setValue(s.fogLook.animate).onChange((v) => { s.fogLook.animate = v; apply(); }));

@@ -63,12 +63,15 @@ export function drawGlyph(ctx: CanvasRenderingContext2D, icons: IconStore, style
 	ctx.strokeStyle = "rgba(0,0,0,0.6)";
 	ctx.stroke(p);
 	if (style.icon) {
-		ctx.fillStyle = "rgba(255,255,255,0.94)";
-		ctx.beginPath(); ctx.arc(cx, cy, r * 0.8, 0, Math.PI * 2); ctx.fill();
-		const px = r * 1.15;
+		const bg = style.iconBg !== false;
+		if (bg) {
+			ctx.fillStyle = "rgba(255,255,255,0.94)";
+			ctx.beginPath(); ctx.arc(cx, cy, r * 0.8, 0, Math.PI * 2); ctx.fill();
+		}
+		const px = bg ? r * 1.15 : r * 1.5; // without the disc the icon can use the whole head
 		const t = icons.tinted(style.icon, style.iconColor || "#1b1b1b", Math.ceil(px * dpr), false);
 		if (t) ctx.drawImage(t, cx - px / 2, cy - px / 2, px, px);
-	} else {
+	} else if (style.iconBg !== false) {
 		ctx.fillStyle = "rgba(255,255,255,0.92)";
 		ctx.beginPath(); ctx.arc(cx, cy, r * 0.38, 0, Math.PI * 2); ctx.fill();
 	}

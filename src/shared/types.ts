@@ -11,6 +11,8 @@ export interface NodeStyle {
 	size: number;
 	/** Light/dark outline around icon-only nodes so they read on busy maps. */
 	halo: boolean;
+	/** Pins only: the white disc behind the icon. Default true. */
+	iconBg?: boolean;
 }
 
 export interface PCNode {
@@ -150,6 +152,7 @@ export const DEFAULT_STYLE: NodeStyle = {
 	iconColor: "#1b1b1b",
 	size: 1,
 	halo: true,
+	iconBg: true,
 };
 
 export const DEFAULT_LINE: LineStyle = { color: "#5a3b1f", width: 0.0016, dash: "solid" };

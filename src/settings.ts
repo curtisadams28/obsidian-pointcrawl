@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type PointCrawlPlugin from "./main";
-import { ImagePickerModal, importIconImage, renderScaleControls, renderStyleEditor } from "./modals";
+import { ICON_DATA, ICON_INDEX, ImagePickerModal, colorSetting, importIconImage, renderScaleControls, renderStyleEditor } from "./modals";
 import { applyLineStyle, smoothD } from "./shared/drawing";
 import { DEFAULT_TEXT_STYLE, TextStyle } from "./shared/text";
 import { DEFAULT_LINE, DEFAULT_MAP_SETTINGS, DashStyle, LineStyle, MapSettings, NodeStyle, Visibility, uid } from "./shared/types";
@@ -14,6 +14,7 @@ export interface PCSettings {
 	eraserSize: number;
 	/** Saved colours, shared by every colour picker. */
 	palette: string[];
+	paletteSeeded: boolean;
 	/** The look of the last text you created, used for the next one. */
 	textDefaults: TextStyle;
 	instantUpdates: boolean;
@@ -32,11 +33,15 @@ export interface PCSettings {
 	published: Record<string, { imageKey: string; imageFile: string }>;
 }
 
+/** Starting palette so the pickers are never empty. Edit it in Settings → General. */
+export const DEFAULT_PALETTE = ["#c0392b", "#d35400", "#d4a017", "#2e8b57", "#16808d", "#2a6fdb", "#7e57c2", "#c2185b", "#5a3b1f", "#7a1f1f", "#1b3a6b", "#2e5a2a", "#2b2b2b", "#f2f0ea", "#ffffff", "#000000"];
+
 export const DEFAULT_SETTINGS: PCSettings = {
-	nodeDefaults: { shape: "pin", color: "#c0392b", iconColor: "#1b1b1b", size: 1, halo: true, visibility: "auto" },
+	nodeDefaults: { shape: "pin", color: "#c0392b", iconColor: "#1b1b1b", size: 1, halo: true, iconBg: true, visibility: "auto" },
 	lineDefaults: { ...DEFAULT_LINE },
 	eraserSize: 0.02,
 	palette: [],
+	paletteSeeded: false,
 	textDefaults: { ...DEFAULT_TEXT_STYLE },
 	instantUpdates: true,
 	customIcons: [],
@@ -96,19 +101,19 @@ export class PCSettingTab extends PluginSettingTab {
 		new Setting(el).setName("Open notes in")
 			.addDropdown((d) => d.addOptions({ current: "Same tab", tab: "New tab", split: "Split pane" }).setValue(s.openIn).onChange((v) => { s.openIn = v as PCSettings["openIn"]; this.save(); }));
 
-		new Setting(el).setName("Saved colours").setDesc("Your palette. Save colours with the + button beside any colour picker; they show up in every picker (nodes, lines, text). Right-click a swatch to remove it.").setHeading();
+		new Setting(el).setName("Colour palette").setDesc("These colours appear beside every colour picker (nodes, lines, text, fog). Click a swatch here to remove it, or add your own below.").setHeading();
 		const pal = el.createDiv({ cls: "pc-swatches pc-wrap pc-palette-mgr" });
 		const renderPal = () => {
 			pal.empty();
 			if (!s.palette.length) pal.createSpan({ cls: "setting-item-description", text: "Nothing saved yet." });
 			for (const c of s.palette) {
-				const b = pal.createEl("button", { cls: "pc-swatch pc-swatch-lg", attr: { "aria-label": `Remove ${c}`, title: `${c} - click to remove` } });
+				const b = pal.createEl("button", { cls: "pc-swatch pc-swatch-lg", attr: { "aria-label": `Remove ${c}` } });
 				b.style.background = c;
 				b.addEventListener("click", async () => { await this.plugin.removePaletteColor(c); renderPal(); });
 			}
 		};
 		renderPal();
-		new Setting(el).setName("Add a colour").addColorPicker((c) => c.setValue("#c0392b").onChange(() => undefined)).addButton((b) => b.setButtonText("Save to palette").onClick(async () => {
+		new Setting(el).setName("Add a colour").addColorPicker((c) => c.setValue("#c0392b").onChange(() => undefined)).addButton((b) => b.setButtonText("Add to palette").onClick(async () => {
 			const input = (b.buttonEl as HTMLElement).parentElement?.querySelector<HTMLInputElement>("input[type=color]");
 			if (input) { await this.plugin.addPaletteColor(input.value); renderPal(); }
 		}));
@@ -158,7 +163,7 @@ export class PCSettingTab extends PluginSettingTab {
 			g.restore();
 		};
 		draw();
-		new Setting(el).setName("Colour").addColorPicker((c) => c.setValue(ln.color).onChange((v) => { ln.color = v; draw(); this.save(); }));
+		colorSetting(el, this.plugin, "Colour", ln.color, (v) => { ln.color = v; draw(); this.save(); });
 		new Setting(el).setName("Width").setDesc("Relative to the map, so lines look the same on any image size.")
 			.addSlider((sl) => sl.setLimits(1, 20, 1).setValue(Math.round(ln.width / 0.0004)).setDynamicTooltip().onChange((v) => { ln.width = v * 0.0004; draw(); this.save(); }));
 		new Setting(el).setName("Line style")
@@ -173,7 +178,7 @@ export class PCSettingTab extends PluginSettingTab {
 		const s = this.s, md = s.mapDefaults;
 		new Setting(el).setName("New map defaults").setHeading();
 		new Setting(el).setName("Hide nodes under fog from players").addToggle((t) => t.setValue(md.hideNodesInFog).onChange((v) => { md.hideNodesInFog = v; this.save(); }));
-		new Setting(el).setName("Fog colour").addColorPicker((c) => c.setValue(md.fogLook.color).onChange((v) => { md.fogLook.color = v; this.save(); }));
+		colorSetting(el, this.plugin, "Fog colour", md.fogLook.color, (v) => { md.fogLook.color = v; this.save(); });
 		new Setting(el).setName("Density for players").setDesc("1 fully hides the map under fog.")
 			.addSlider((sl) => sl.setLimits(0.4, 1, 0.01).setValue(md.fogLook.density).setDynamicTooltip().onChange((v) => { md.fogLook.density = v; this.save(); }));
 		new Setting(el).setName("Animate fog").addToggle((t) => t.setValue(md.fogLook.animate).onChange((v) => { md.fogLook.animate = v; this.save(); }));
@@ -191,46 +196,43 @@ export class PCSettingTab extends PluginSettingTab {
 
 	private tab_icons(el: HTMLElement) {
 		const s = this.s;
-		el.createEl("p", { cls: "setting-item-description", text: "Add your own icons. They appear in the node icon list and are sent to the player site when a published node uses them." });
+		el.createEl("p", { cls: "setting-item-description", text: "Every icon available for nodes. Add your own from your vault; they appear in the node icon list and are sent to the player site when a published node uses them." });
 		let tint = true;
 		new Setting(el).setName("Single-colour icon").setDesc("On: the icon is tinted with the node's colour (works best with dark artwork on white or transparent). Off: keeps its own colours.")
 			.addToggle((t) => t.setValue(true).onChange((v) => (tint = v)));
-		const list = el.createDiv({ cls: "pc-custom-list" });
-
-		const addBlob = async (blob: Blob, name: string) => {
-			try {
-				const src = await importIconImage(blob, tint);
-				await this.plugin.addCustomIcon({ id: "custom-" + uid(), label: name.replace(/\.[^.]+$/, ""), src, raw: !tint });
-			} catch (e) { new Notice(`Couldn't import ${name}: ${(e as Error).message}`); }
-		};
-		const renderList = () => {
-			list.empty();
-			if (!s.customIcons.length) list.createDiv({ cls: "setting-item-description", text: "No custom icons yet." });
-			for (const ic of s.customIcons) {
-				const row = list.createDiv({ cls: "pc-custom-row" });
-				const th = row.createDiv({ cls: "pc-custom-thumb" });
-				const im = th.createEl("img", { attr: { src: ic.src } });
-				if (ic.raw) im.addClass("is-raw");
-				const name = row.createEl("input", { type: "text" });
-				name.value = ic.label;
-				name.addEventListener("change", () => { ic.label = name.value.trim() || ic.label; this.save(); });
-				row.createSpan({ cls: "pc-val", text: ic.raw ? "Full colour" : "Tinted" });
-				const del = row.createEl("button", { text: "Remove", cls: "mod-warning" });
-				del.addEventListener("click", async () => { await this.plugin.removeCustomIcon(ic.id); renderList(); });
-			}
-		};
-		renderList();
-
-		new Setting(el).setName("Add icons")
-			.addButton((b) => b.setButtonText("From computer…").setCta().onClick(() => {
-				const inp = createEl("input", { type: "file", attr: { accept: "image/*,.svg", multiple: "true" } }) as HTMLInputElement;
-				inp.onchange = async () => { for (const f of Array.from(inp.files ?? [])) await addBlob(f, f.name); renderList(); };
-				inp.click();
-			}))
-			.addButton((b) => b.setButtonText("From vault…").onClick(() => new ImagePickerModal(this.app, async (f) => {
-				await addBlob(new Blob([await this.app.vault.readBinary(f)], { type: f.extension === "svg" ? "image/svg+xml" : "image/" + f.extension.replace("jpg", "jpeg") }), f.name);
-				renderList();
+		new Setting(el).setName("Add an icon").setDesc("Pick an image (PNG, SVG, WebP…) from your vault.")
+			.addButton((b) => b.setButtonText("From vault…").setCta().onClick(() => new ImagePickerModal(this.app, async (f) => {
+				try {
+					const blob = new Blob([await this.app.vault.readBinary(f)], { type: f.extension === "svg" ? "image/svg+xml" : "image/" + f.extension.replace("jpg", "jpeg") });
+					await this.plugin.addCustomIcon({ id: "custom-" + uid(), label: f.basename, src: await importIconImage(blob, tint), raw: !tint });
+					renderAll();
+				} catch (e) { new Notice(`Couldn't import ${f.name}: ${(e as Error).message}`); }
 			}).open()));
+
+		const search = el.createEl("input", { type: "search", placeholder: "Search all icons…", cls: "pc-icon-search pc-icon-search-wide" });
+		const grid = el.createDiv({ cls: "pc-all-icons" });
+		const renderAll = () => {
+			grid.empty();
+			const items = [...s.customIcons.map((c) => ({ id: c.id, label: c.label, src: c.src, custom: true, raw: c.raw })), ...ICON_INDEX.map((i) => ({ id: i.id, label: i.label, src: ICON_DATA[i.id], custom: false, raw: false }))];
+			for (const it of items) {
+				const cell = grid.createDiv({ cls: "pc-all-icon" + (it.custom ? " is-custom" : ""), attr: { "data-q": (it.label + " " + it.id).toLowerCase() } });
+				const th = cell.createDiv({ cls: "pc-custom-thumb", attr: { "aria-label": it.label } });
+				const im = th.createEl("img", { attr: { src: it.src, alt: it.label } });
+				if (it.raw) im.addClass("is-raw");
+				cell.createDiv({ cls: "pc-all-icon-name", text: it.label });
+				if (it.custom) {
+					const rm = cell.createEl("button", { cls: "pc-all-icon-x", text: "×", attr: { "aria-label": `Remove ${it.label}` } });
+					rm.addEventListener("click", async () => { await this.plugin.removeCustomIcon(it.id); renderAll(); });
+				}
+			}
+			filter();
+		};
+		const filter = () => {
+			const q = search.value.trim().toLowerCase();
+			grid.querySelectorAll<HTMLElement>(".pc-all-icon").forEach((c) => c.toggleClass("pc-hidden", !!q && !(c.dataset.q ?? "").includes(q)));
+		};
+		search.addEventListener("input", filter);
+		renderAll();
 	}
 
 	/* --------------------------- Performance --------------------------- */

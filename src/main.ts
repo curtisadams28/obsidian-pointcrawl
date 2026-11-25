@@ -4,7 +4,7 @@ import { ICON_INDEX } from "./shared/icon-index";
 import { FONTS_CSS_URL } from "./shared/text";
 import { GitHub } from "./github";
 import { IMAGE_EXTS, NewMapModal } from "./modals";
-import { CustomIcon, DEFAULT_SETTINGS, PCSettings, PCSettingTab } from "./settings";
+import { CustomIcon, DEFAULT_PALETTE, DEFAULT_SETTINGS, PCSettings, PCSettingTab } from "./settings";
 import { IconStore } from "./shared/icons";
 import { MapFile, uid } from "./shared/types";
 import { TileStore } from "./tilestore";
@@ -99,7 +99,9 @@ export default class PointCrawlPlugin extends Plugin {
 			nodeDefaults: { ...DEFAULT_SETTINGS.nodeDefaults, ...legacy, ...(saved.nodeDefaults ?? {}) },
 			lineDefaults: { ...DEFAULT_SETTINGS.lineDefaults, ...(saved.lineDefaults ?? {}) },
 			customIcons: saved.customIcons ?? [],
-			palette: Array.isArray(saved.palette) ? saved.palette : [],
+			// first run of this version: start from the default palette, keeping anything already saved
+			palette: saved.paletteSeeded ? (Array.isArray(saved.palette) ? saved.palette : []) : [...new Set([...DEFAULT_PALETTE, ...(Array.isArray(saved.palette) ? saved.palette : [])])],
+			paletteSeeded: true,
 			textDefaults: { ...DEFAULT_SETTINGS.textDefaults, ...(saved.textDefaults ?? {}) },
 			mapDefaults: { ...DEFAULT_SETTINGS.mapDefaults, ...(saved.mapDefaults ?? {}), fogLook: { ...DEFAULT_SETTINGS.mapDefaults.fogLook, ...(saved.mapDefaults?.fogLook ?? {}) }, scale: { ...DEFAULT_SETTINGS.mapDefaults.scale, ...(saved.mapDefaults?.scale ?? {}) } },
 			github: { ...DEFAULT_SETTINGS.github, ...(saved.github ?? {}) },

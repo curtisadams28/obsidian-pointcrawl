@@ -23,7 +23,7 @@ Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins
    - Line colour, width and **solid / dashed / dotted / dash-dot** are in the toolbar. Click a line with the Select tool to restyle or delete it. Ctrl/Cmd+Z undoes.
    - **Edit lines**: with Select, click a line to select it, then drag it to move it, drag any point (or curve handle) to reshape it, double-click the line (or right-click → Add point here) to add a point, and press Delete (or right-click → Delete point, or Alt-click) to remove one. Right-click a pen point for *Make smooth / Make corner*.
    - **Text**: click the map with the Text tool. Choose a font, bold/italic, colour, size, an **arc** (bend the text up or down, up to a full circle), an **outline** (optionally blurred into a glow) and a **drop shadow**. Select text to **move** it, drag a corner to **scale** it, or drag the round handle to **rotate** it (hold Shift to snap). Double-click text to edit it. Text and lines sit under the fog like everything else.
-   - **Saved colours**: press **+** beside any colour picker to save the colour to your palette; it then appears in every picker (nodes, lines, text) and in the toolbar's palette button. Right-click a swatch to remove it.
+   - **Colour palette**: your palette appears beside every colour picker (node colour and icon colour, line colour, text, outline and shadow, fog) and in the toolbar's palette button. It starts with a default set; add and remove colours in *Settings → General → Colour palette*.
    - **Fog**: Reveal and Add-fog brushes, undo, fog-all / clear-all.
 4. **Ruler** (toolbar, also on the player page): drag to measure, Shift+drag to add another leg, click or Esc to clear. Distances use the map's scale.
 5. **View mode**: clicking a pin opens its note.
@@ -60,9 +60,9 @@ Images come in all sizes, so each map has its own scale (map settings → **Scal
 
 ## Settings
 
-Tabs: **General**, **Nodes** (default look of new nodes, with live preview), **Drawing** (default line style), **Fog**, **Icons** (add your own), **Performance**, **Player site**.
+Tabs: **General** (including your colour palette), **Nodes** (default look of new nodes, with live preview), **Drawing** (default line style), **Fog**, **Icons** (every icon, plus add your own from the vault), **Performance**, **Player site**.
 
-Custom icons: *Settings → Icons → Add icons*. Single-colour icons (dark on white or transparent) are tinted with the node colour; switch that off to keep full colour. They are sent to the player page automatically when a visible node uses them.
+Custom icons: *Settings → Icons → Add an icon → From vault…*. Single-colour icons (dark on white or transparent) are tinted with the node colour; switch that off to keep full colour. They are sent to the player page automatically when a visible node uses them.
 
 ## Player site
 

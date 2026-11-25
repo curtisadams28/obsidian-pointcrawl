@@ -76,7 +76,7 @@ export class PointCrawlView extends TextFileView {
 	private selectedId: string | null = null;
 
 	private queue: PublishQueue;
-	private el!: { toolbar: HTMLElement; stage: HTMLElement; overlay: HTMLElement; status: HTMLElement; peers: HTMLElement; buttons: Record<string, HTMLElement>; groups: Record<string, HTMLElement> };
+	private el!: { toolbar: HTMLElement; left: HTMLElement; stage: HTMLElement; overlay: HTMLElement; status: HTMLElement; peers: HTMLElement; buttons: Record<string, HTMLElement>; groups: Record<string, HTMLElement> };
 
 	constructor(leaf: WorkspaceLeaf, private plugin: PointCrawlPlugin) {
 		super(leaf);
@@ -117,9 +117,10 @@ export class PointCrawlView extends TextFileView {
 		root.addClass("pc-view");
 		root.tabIndex = 0;
 		const toolbar = root.createDiv({ cls: "pc-toolbar" });
+		const left = toolbar.createDiv({ cls: "pc-tb-left" }); // scrolls sideways on narrow panes so the bar never changes height
 		const stage = root.createDiv({ cls: "pc-stage" });
 		const overlay = stage.createDiv({ cls: "pc-overlay pc-hidden" });
-		this.el = { toolbar, stage, overlay, status: null as any, peers: null as any, buttons: {}, groups: {} };
+		this.el = { toolbar, left, stage, overlay, status: null as any, peers: null as any, buttons: {}, groups: {} };
 		this.buildToolbar();
 
 		this.canvas = new MapCanvas(stage, this.plugin.icons);
@@ -299,7 +300,7 @@ export class PointCrawlView extends TextFileView {
 	/* ------------------------------ toolbar ------------------------------ */
 
 	private btn(group: string, id: string, icon: string, label: string, fn: () => void): HTMLElement {
-		const parent = (this.el.groups[group] ??= this.el.toolbar.createDiv({ cls: `pc-group pc-group-${group}` }));
+		const parent = (this.el.groups[group] ??= (group === "right" ? this.el.toolbar : this.el.left).createDiv({ cls: `pc-group pc-group-${group}` }));
 		const b = parent.createDiv({ cls: "clickable-icon pc-btn", attr: { "aria-label": label, "data-tooltip-position": "bottom" } });
 		setIcon(b, icon);
 		b.addEventListener("click", fn);
@@ -308,7 +309,7 @@ export class PointCrawlView extends TextFileView {
 	}
 
 	private slider(group: string, label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void) {
-		const parent = (this.el.groups[group] ??= this.el.toolbar.createDiv({ cls: `pc-group pc-group-${group}` }));
+		const parent = (this.el.groups[group] ??= (group === "right" ? this.el.toolbar : this.el.left).createDiv({ cls: `pc-group pc-group-${group}` }));
 		const wrap = parent.createDiv({ cls: "pc-slider", attr: { "aria-label": label, "data-tooltip-position": "bottom" } });
 		wrap.createSpan({ text: label });
 		const inp = wrap.createEl("input", { type: "range", attr: { min: String(min), max: String(max), step: String(step) } });
@@ -331,7 +332,7 @@ export class PointCrawlView extends TextFileView {
 		this.btn("fogtools", "hide", "cloud-fog", "Add fog back (G)", () => this.setTool("hide"));
 
 		// line style (pen / freehand / selected line)
-		const lg = (this.el.groups["line"] = this.el.toolbar.createDiv({ cls: "pc-group pc-group-line" }));
+		const lg = (this.el.groups["line"] = this.el.left.createDiv({ cls: "pc-group pc-group-line" }));
 		const color = lg.createEl("input", { type: "color", cls: "pc-color", attr: { "aria-label": "Line colour" } });
 		color.addEventListener("input", () => this.setLine({ color: color.value }));
 		const pal = lg.createDiv({ cls: "clickable-icon pc-btn", attr: { "aria-label": "Saved colours", "data-tooltip-position": "bottom" } });
