@@ -97,6 +97,24 @@ export interface Drawing {
 }
 export type RenderDrawing = Pick<Drawing, "id" | "style" | "d">;
 
+/** A text label. Sizes and offsets in "em" so everything scales together; position and size are in map units (1 = image width). */
+export interface TextObj {
+	id: string;
+	x: number; y: number;
+	/** Radians. */
+	rot: number;
+	/** Font size as a fraction of the image width. */
+	size: number;
+	text: string;
+	font: string;
+	bold: boolean; italic: boolean;
+	color: string;
+	/** Degrees the text sweeps along an arc. 0 = straight, + bends like a rainbow, - like a smile. */
+	arc: number;
+	outW: number; outColor: string; outBlur: number;
+	shadow: boolean; shColor: string; shOpacity: number; shBlur: number; shDx: number; shDy: number;
+}
+
 export interface MapFile {
 	version: 1;
 	id: string;
@@ -105,6 +123,7 @@ export interface MapFile {
 	image: string;
 	nodes: PCNode[];
 	drawings: Drawing[];
+	texts: TextObj[];
 	fog: FogData;
 	settings: MapSettings;
 }
@@ -117,6 +136,7 @@ export interface PublishedState {
 	image: { file: string; w: number; h: number };
 	nodes: { id: string; x: number; y: number; title: string; style: NodeStyle }[];
 	drawings?: RenderDrawing[];
+	texts?: TextObj[];
 	/** Custom icons used by the nodes above (built-in icons ship with the player page). */
 	customIcons?: Record<string, { src: string; raw: boolean }>;
 	/** PNG data URL, alpha = fog amount. null when fog is disabled. */

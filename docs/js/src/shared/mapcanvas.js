@@ -1,6 +1,7 @@
 import { FogRenderer } from "./fog.js";
 import { applyLineStyle } from "./drawing.js";
 import { formatDistance, niceBar } from "./scale.js";
+import { textHit, textRenderer } from "./text.js";
 import { DEFAULT_SCALE } from "./types.js";
 /* ----------------------------- glyphs -------------------------------- */
 export function nodeBox(style, x, y, s) {
@@ -106,6 +107,7 @@ export class MapCanvas {
         this.maxZoom = 4;
         this.nodes = [];
         this.drawings = [];
+        this.texts = [];
         this.selectedDrawingId = null;
         /** CSS cursor for the active tool (null = normal pointer). */
         this.toolCursor = null;
@@ -127,6 +129,8 @@ export class MapCanvas {
         this.pointer = null;
         this.drag = null;
         this.panGrab = false;
+        this.samples = [];
+        this.flingRaf = 0;
         this.avgColor = null;
         this.lastPointerType = "mouse";
         /** Map scale (for the scale bar and the ruler). */
@@ -138,7 +142,10 @@ export class MapCanvas {
         this.rulerActive = false;
         this.ruler = null;
         this.pdown = (e) => {
-            this.el.setPointerCapture(e.pointerId);
+            try {
+                this.el.setPointerCapture(e.pointerId);
+            }
+            catch { /* pointer already gone */ }
             this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
             if (this.pointers.size === 2) {
                 if (this.drag?.kind === "tool")
@@ -150,6 +157,8 @@ export class MapCanvas {
                 return;
             }
             this.lastPointerType = e.pointerType;
+            this.stopFling();
+            this.samples = [];
             // Ctrl+click is a right click on macOS
             const button = e.button === 0 && e.ctrlKey && /Mac/.test(navigator.platform) ? 2 : e.button;
             const info = this.info(e, button);
@@ -190,6 +199,9 @@ export class MapCanvas {
                     this.clamp();
                     if (d.grab)
                         this.panGrab = true;
+                    this.samples.push({ t: e.timeStamp, x: e.clientX, y: e.clientY });
+                    if (this.samples.length > 8)
+                        this.samples.shift();
                 }
             }
             else if (d?.kind === "ruler") {
@@ -223,6 +235,8 @@ export class MapCanvas {
                 this.onToolUp?.(info);
             else if (d.kind === "ruler")
                 this.rulerUp();
+            else if (d.kind === "pan" && d.moved && e.type === "pointerup" && e.pointerType !== "mouse")
+                this.fling(e.timeStamp);
             else if (!d.moved && e.type === "pointerup") {
                 if (d.button === 0)
                     this.onClick?.(info);
@@ -259,6 +273,7 @@ export class MapCanvas {
         this.el.style.display = "block";
         this.ctx = this.el.getContext("2d");
         this.unsubIcons = this.icons.addListener(() => this.requestDraw());
+        this.unsubText = textRenderer.onChange(() => this.requestDraw());
         this.ro = new ResizeObserver(() => this.resize());
         this.ro.observe(host);
         const e = this.el;
@@ -278,6 +293,8 @@ export class MapCanvas {
     destroy() {
         this.ro.disconnect();
         this.unsubIcons();
+        this.unsubText();
+        this.stopFling();
         cancelAnimationFrame(this.raf);
         this.el.remove();
     }
@@ -308,6 +325,7 @@ export class MapCanvas {
             else
                 this.clamp();
         }
+        this.draw((performance.now() - this.t0) / 1000);
         this.requestDraw();
     }
     computeFit() {
@@ -317,6 +335,7 @@ export class MapCanvas {
         this.maxZoom = Math.max(4, this.fitZoom * 3);
     }
     fit() {
+        this.stopFling();
         if (!this.image) {
             this.requestDraw();
             return;
@@ -329,6 +348,7 @@ export class MapCanvas {
     }
     zoomBy(f) { this.zoomAt(this.vw / 2, this.vh / 2, f); }
     zoomAt(sx, sy, f) {
+        this.stopFling();
         const nz = Math.min(this.maxZoom, Math.max(this.fitZoom * 0.5, this.zoom * f));
         const k = nz / this.zoom;
         this.tx = sx - (sx - this.tx) * k;
@@ -357,6 +377,80 @@ export class MapCanvas {
         const sx = e.clientX - r.left, sy = e.clientY - r.top;
         const { nx, ny } = this.toNorm(sx, sy);
         return { sx, sy, nx, ny, ux: nx, uy: ny * (this.dims ? this.dims.h / this.dims.w : 1), node: this.hitTest(sx, sy), button, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, alt: e.altKey, spaceHeld: this.spaceHeld };
+    }
+    /* ------------------------- touch momentum ------------------------- */
+    stopFling() { if (this.flingRaf) {
+        cancelAnimationFrame(this.flingRaf);
+        this.flingRaf = 0;
+    } }
+    /** Keep gliding after a touch swipe, slowing down smoothly. Faster swipes travel further. */
+    fling(now) {
+        const s = this.samples.filter((p) => now - p.t < 100);
+        this.samples = [];
+        if (s.length < 2)
+            return;
+        const a = s[0], b = s[s.length - 1], dt = b.t - a.t;
+        if (dt < 1 || now - b.t > 60)
+            return; // finger paused before lifting
+        const cap = 6;
+        let vx = (b.x - a.x) / dt, vy = (b.y - a.y) / dt; // px per ms
+        const sp = Math.hypot(vx, vy);
+        if (sp < 0.12)
+            return;
+        if (sp > cap) {
+            vx *= cap / sp;
+            vy *= cap / sp;
+        }
+        const tau = 380; // ms; distance travelled = velocity x tau
+        let last = performance.now();
+        const step = (t) => {
+            const dtm = Math.min(48, t - last);
+            last = t;
+            const k = Math.exp(-dtm / tau), dx = vx * tau * (1 - k), dy = vy * tau * (1 - k);
+            vx *= k;
+            vy *= k;
+            const ox = this.tx + dx, oy = this.ty + dy;
+            this.tx = ox;
+            this.ty = oy;
+            this.clamp();
+            if (this.tx !== ox)
+                vx = 0; // hit the edge
+            if (this.ty !== oy)
+                vy = 0;
+            this.requestDraw();
+            this.flingRaf = Math.hypot(vx, vy) > 0.02 ? requestAnimationFrame(step) : 0;
+        };
+        this.flingRaf = requestAnimationFrame(step);
+    }
+    /** Topmost text under a point (map units), if any. */
+    hitText(ux, uy, pad = 0) {
+        for (let i = this.texts.length - 1; i >= 0; i--)
+            if (textHit(this.texts[i], ux, uy, pad))
+                return this.texts[i];
+        return null;
+    }
+    drawTexts() {
+        if (!this.texts.length || !this.image)
+            return;
+        const ctx = this.ctx, s = this.unitScale;
+        for (const t of this.texts) {
+            const lay = textRenderer.layout(t);
+            const sx = this.tx + t.x * s, sy = this.ty + t.y * s, em = t.size * s; // css px per em
+            const r = Math.max(lay.box.x1 - lay.box.x0, lay.box.y1 - lay.box.y0) * em;
+            if (sx < -r || sy < -r || sx > this.vw + r || sy > this.vh + r || em * 0.3 < 1)
+                continue;
+            const spr = textRenderer.sprite(t, em * this.dpr);
+            if (!spr)
+                continue;
+            const f = (em * this.dpr) / spr.ppe / this.dpr;
+            ctx.save();
+            ctx.translate(sx, sy);
+            if (t.rot)
+                ctx.rotate(t.rot);
+            ctx.scale(f, f);
+            ctx.drawImage(spr.canvas, -spr.ax, -spr.ay);
+            ctx.restore();
+        }
     }
     get unitScale() { return this.zoom * (this.dims?.w ?? 1); }
     updateCursor() {
@@ -452,6 +546,7 @@ export class MapCanvas {
             this.fillOutsideTint();
         this.drawTiles();
         this.drawDrawings();
+        this.drawTexts();
         if (this.fogMask && this.fogOpacity > 0) {
             this.fogRenderer.draw(ctx, this.fogMask, { zoom: this.zoom, tx: this.tx, ty: this.ty, vw: this.vw, vh: this.vh }, im.w, im.h, this.fogLook, this.fogOpacity, t, this.fogOutside);
         }

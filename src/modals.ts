@@ -1,10 +1,11 @@
-import { AbstractInputSuggest, App, FuzzySuggestModal, Modal, Notice, Setting, TFile, TFolder } from "obsidian";
+import { AbstractInputSuggest, App, FuzzySuggestModal, Menu, Modal, Notice, Setting, TFile, TFolder } from "obsidian";
 import type PointCrawlPlugin from "./main";
 import { ICON_DATA } from "./icon-data";
 import { ICON_INDEX } from "./shared/icon-index";
 import { drawGlyph } from "./shared/mapcanvas";
 import { UNITS, isPresetUnit, unitName } from "./shared/scale";
-import { MapFile, MapScale, NodeStyle, PCNode, Visibility } from "./shared/types";
+import { FONTS, textRenderer } from "./shared/text";
+import { MapFile, MapScale, NodeStyle, PCNode, TextObj, Visibility } from "./shared/types";
 
 export const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"];
 
@@ -110,6 +111,61 @@ export async function importIconImage(blob: Blob, tintable: boolean): Promise<st
 
 /* ----------------------------- style editor --------------------------- */
 
+export const toHex = (c: string) => (/^#[0-9a-f]{6}$/i.test(c) ? c.toLowerCase() : "#000000");
+
+/** A colour input with preset swatches, your saved palette, and a button to save the current colour. */
+export function colorField(parent: HTMLElement, pl: PointCrawlPlugin, value: string, onChange: (c: string) => void, presets: string[] = []) {
+	const wrap = parent.createDiv({ cls: "pc-colorfield" });
+	const input = wrap.createEl("input", { type: "color" });
+	input.value = toHex(value);
+	const sw = wrap.createDiv({ cls: "pc-swatches pc-wrap" });
+	const set = (c: string) => { input.value = toHex(c); onChange(input.value); };
+	input.addEventListener("input", () => onChange(input.value));
+	const swatch = (c: string, saved: boolean) => {
+		const b = sw.createEl("button", { cls: "pc-swatch", attr: { "aria-label": saved ? `${c} (saved)` : c, title: saved ? "Right-click to remove from palette" : c } });
+		b.style.background = c;
+		b.addEventListener("click", () => set(c));
+		if (saved) b.addEventListener("contextmenu", (e) => {
+			e.preventDefault();
+			new Menu().addItem((i) => i.setTitle("Remove from palette").setIcon("trash").onClick(async () => { await pl.removePaletteColor(c); render(); })).showAtMouseEvent(e);
+		});
+	};
+	const render = () => {
+		sw.empty();
+		presets.forEach((c) => swatch(c, false));
+		pl.settings.palette.forEach((c) => swatch(c, true));
+		const add = sw.createEl("button", { cls: "pc-swatch pc-swatch-add", text: "+", attr: { "aria-label": "Save this colour to your palette", title: "Save this colour to your palette" } });
+		add.addEventListener("click", async () => { await pl.addPaletteColor(input.value); render(); });
+	};
+	render();
+	return { set: (c: string) => { input.value = toHex(c); } };
+}
+
+/** Small popover listing the saved palette (used from the toolbar). */
+export function openPalette(anchor: HTMLElement, pl: PointCrawlPlugin, current: () => string, onPick: (c: string) => void) {
+	document.querySelectorAll(".pc-popover").forEach((e) => e.remove());
+	const pop = document.body.createDiv({ cls: "pc-popover" });
+	const r = anchor.getBoundingClientRect();
+	pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 270)) + "px";
+	pop.style.top = r.bottom + 6 + "px";
+	const render = () => {
+		pop.empty();
+		pop.createDiv({ cls: "pc-pop-title", text: "Saved colours" });
+		const row = pop.createDiv({ cls: "pc-swatches pc-wrap" });
+		if (!pl.settings.palette.length) row.createSpan({ cls: "pc-val", text: "None yet. Save the current colour below." });
+		for (const c of pl.settings.palette) {
+			const b = row.createEl("button", { cls: "pc-swatch", attr: { "aria-label": c, title: "Right-click to remove" } });
+			b.style.background = c;
+			b.addEventListener("click", () => { onPick(c); pop.remove(); });
+			b.addEventListener("contextmenu", (e) => { e.preventDefault(); void pl.removePaletteColor(c).then(render); });
+		}
+		pop.createEl("button", { text: "Save current colour" }).addEventListener("click", async () => { await pl.addPaletteColor(current()); render(); });
+	};
+	render();
+	const close = (e: Event) => { if (!pop.contains(e.target as Node)) { pop.remove(); document.removeEventListener("pointerdown", close, true); } };
+	window.setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
+}
+
 const SWATCHES = ["#c0392b", "#d35400", "#d4a017", "#2e8b57", "#16808d", "#2a6fdb", "#7e57c2", "#c2185b", "#2b2b2b", "#f2f0ea"];
 
 export interface StyleEditorOpts {
@@ -153,16 +209,7 @@ export function renderStyleEditor(parent: HTMLElement, o: StyleEditorOpts): () =
 	}
 
 	// colour
-	const colorRow = row("Colour");
-	const sw = colorRow.createDiv({ cls: "pc-swatches" });
-	const colorInput = colorRow.createEl("input", { type: "color" });
-	colorInput.value = st.color;
-	for (const c of SWATCHES) {
-		const b = sw.createEl("button", { cls: "pc-swatch", attr: { "aria-label": c } });
-		b.style.background = c;
-		b.addEventListener("click", () => { st.color = c; colorInput.value = c; changed(); });
-	}
-	colorInput.addEventListener("input", () => { st.color = colorInput.value; changed(); });
+	colorField(row("Colour"), pl, st.color, (c) => { st.color = c; changed(); }, SWATCHES);
 
 	// size
 	const sizeCtl = row("Size");
@@ -173,9 +220,7 @@ export function renderStyleEditor(parent: HTMLElement, o: StyleEditorOpts): () =
 
 	// icon colour (pins) / outline (icon only)
 	const icRow = row("Icon colour");
-	const icInput = icRow.createEl("input", { type: "color" });
-	icInput.value = st.iconColor;
-	icInput.addEventListener("input", () => { st.iconColor = icInput.value; changed(); });
+	colorField(icRow, pl, st.iconColor, (c) => { st.iconColor = c; changed(); }, ["#1b1b1b", "#ffffff"]);
 	const haloRow = row("Outline");
 	const halo = haloRow.createEl("input", { type: "checkbox" });
 	halo.checked = st.halo;
@@ -314,6 +359,111 @@ export class CalibrateModal extends Modal {
 			.addButton((b) => b.setButtonText("Set scale").setCta().onClick(apply));
 	}
 	onClose() { this.contentEl.empty(); if (!this.done) this.onCancel(); }
+}
+
+/* -------------------------------- text -------------------------------- */
+
+export class TextModal extends Modal {
+	private t: TextObj;
+	constructor(app: App, private plugin: PointCrawlPlugin, t: TextObj, private isNew: boolean, private onSave: (t: TextObj) => void, private onDelete?: () => void) {
+		super(app);
+		this.t = JSON.parse(JSON.stringify(t));
+	}
+
+	private save = () => { if (!this.t.text.trim()) return void new Notice("Type some text first."); this.close(); this.onSave(this.t); };
+
+	onOpen() {
+		const el = this.contentEl, t = this.t;
+		this.modalEl.addClass("pc-node-modal");
+		const head = el.createDiv({ cls: "pc-modal-head" });
+		head.createEl("h3", { text: this.isNew ? "Add text" : "Edit text" });
+		const actions = head.createDiv({ cls: "pc-modal-actions" });
+		if (!this.isNew && this.onDelete) actions.createEl("button", { text: "Delete", cls: "mod-warning" }).addEventListener("click", () => { this.close(); this.onDelete!(); });
+		actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+		actions.createEl("button", { text: this.isNew ? "Add" : "Save", cls: "mod-cta" }).addEventListener("click", this.save);
+
+		const ta = el.createEl("textarea", { cls: "pc-field pc-textarea", attr: { rows: "2", placeholder: "Text (Enter for a new line)" } });
+		ta.value = t.text;
+		window.setTimeout(() => { ta.focus(); ta.select(); }, 30);
+		const prev = el.createEl("canvas", { cls: "pc-preview pc-text-preview" });
+		const dpr = Math.min(2, window.devicePixelRatio || 1), PW = 560, PH = 120;
+		prev.width = PW * dpr; prev.height = PH * dpr; prev.style.width = "100%"; prev.style.maxWidth = PW + "px"; prev.style.height = PH + "px";
+		const draw = () => {
+			const g = prev.getContext("2d")!;
+			g.setTransform(dpr, 0, 0, dpr, 0, 0);
+			g.clearRect(0, 0, PW, PH);
+			const b = textRenderer.layout(t).box;
+			const pad = 0.5 + t.outW + t.outBlur + (t.shadow ? t.shBlur + 0.2 : 0);
+			const em = Math.min((PW - 20) / (b.x1 - b.x0 + 2 * pad), (PH - 10) / (b.y1 - b.y0 + 2 * pad), 90);
+			const sp = textRenderer.sprite(t, em * dpr);
+			if (!sp) return;
+			const f = em / sp.ppe;
+			g.drawImage(sp.canvas, PW / 2 - sp.ax * f - ((b.x0 + b.x1) / 2) * em, PH / 2 - sp.ay * f - ((b.y0 + b.y1) / 2) * em, sp.canvas.width * f, sp.canvas.height * f);
+		};
+		const unsub = textRenderer.onChange(draw);
+		this.cleanup = unsub;
+		const upd = () => { draw(); refreshVis(); };
+		ta.addEventListener("input", () => { t.text = ta.value; upd(); });
+		ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); this.save(); } });
+
+		const rows = el.createDiv({ cls: "pc-se-controls pc-text-rows" });
+		const row = (label: string) => { const r = rows.createDiv({ cls: "pc-row" }); r.createSpan({ cls: "pc-row-label", text: label }); return { wrap: r, ctl: r.createDiv({ cls: "pc-row-ctl" }) }; };
+		const slider = (c: HTMLElement, min: number, max: number, step: number, get: () => number, set: (v: number) => void, fmt: (v: number) => string) => {
+			const i = c.createEl("input", { type: "range", attr: { min: String(min), max: String(max), step: String(step) } });
+			i.value = String(get());
+			const val = c.createSpan({ cls: "pc-val", text: fmt(get()) });
+			i.addEventListener("input", () => { set(+i.value); val.setText(fmt(+i.value)); upd(); });
+		};
+		const pct = (v: number) => (v * 100).toFixed(0) + "%";
+
+		// font
+		const fr = row("Font");
+		const sel = fr.ctl.createEl("select", { cls: "dropdown" });
+		for (const f of FONTS) sel.createEl("option", { value: f.css, text: f.label });
+		sel.createEl("option", { value: "__custom", text: "Installed font…" });
+		const known = FONTS.some((f) => f.css === t.font);
+		sel.value = known ? t.font : "__custom";
+		const custom = fr.ctl.createEl("input", { type: "text", placeholder: "Font name, e.g. Papyrus", cls: "pc-field-sm" });
+		custom.value = known ? "" : t.font.replace(/^"([^"]+)".*$/, "$1");
+		sel.addEventListener("change", () => { if (sel.value !== "__custom") t.font = sel.value; else if (custom.value.trim()) t.font = `"${custom.value.trim()}", sans-serif`; upd(); });
+		custom.addEventListener("input", () => { if (custom.value.trim()) { t.font = `"${custom.value.trim()}", sans-serif`; sel.value = "__custom"; upd(); } });
+		const style = row("Style").ctl;
+		for (const [key, label] of [["bold", "B"], ["italic", "I"]] as const) {
+			const b = style.createEl("button", { text: label, cls: "pc-toggle", attr: { "aria-label": key } });
+			b.toggleClass("is-active", t[key]);
+			if (key === "bold") b.style.fontWeight = "700"; else b.style.fontStyle = "italic";
+			b.addEventListener("click", () => { t[key] = !t[key]; b.toggleClass("is-active", t[key]); upd(); });
+		}
+		colorField(row("Colour").ctl, this.plugin, t.color, (c) => { t.color = c; upd(); }, ["#2b2118", "#ffffff", "#7a1f1f", "#1b3a6b", "#2e5a2a"]);
+		slider(row("Size").ctl, 0.008, 0.2, 0.002, () => t.size, (v) => (t.size = v), (v) => pct(v / 0.03));
+		slider(row("Arc").ctl, -360, 360, 5, () => t.arc, (v) => (t.arc = v), (v) => (v === 0 ? "Straight" : `${v}°`));
+
+		// outline
+		slider(row("Outline").ctl, 0, 0.3, 0.01, () => t.outW, (v) => (t.outW = v), (v) => (v === 0 ? "Off" : pct(v)));
+		const o1 = row("Outline colour"); colorField(o1.ctl, this.plugin, t.outColor, (c) => { t.outColor = c; upd(); }, ["#ffffff", "#000000", "#f4ead2"]);
+		const o2 = row("Outline blur"); slider(o2.ctl, 0, 0.5, 0.01, () => t.outBlur, (v) => (t.outBlur = v), (v) => (v === 0 ? "Sharp" : pct(v)));
+
+		// shadow
+		const sh = row("Drop shadow").ctl;
+		const shOn = sh.createEl("input", { type: "checkbox" });
+		shOn.checked = t.shadow;
+		shOn.addEventListener("change", () => { t.shadow = shOn.checked; upd(); });
+		const s1 = row("Shadow colour"); colorField(s1.ctl, this.plugin, t.shColor, (c) => { t.shColor = c; upd(); }, ["#000000"]);
+		const s2 = row("Shadow opacity"); slider(s2.ctl, 0.05, 1, 0.05, () => t.shOpacity, (v) => (t.shOpacity = v), pct);
+		const s3 = row("Shadow blur"); slider(s3.ctl, 0, 0.6, 0.01, () => t.shBlur, (v) => (t.shBlur = v), pct);
+		const s4 = row("Shadow X"); slider(s4.ctl, -0.4, 0.4, 0.01, () => t.shDx, (v) => (t.shDx = v), pct);
+		const s5 = row("Shadow Y"); slider(s5.ctl, -0.4, 0.4, 0.01, () => t.shDy, (v) => (t.shDy = v), pct);
+		const refreshVis = () => {
+			for (const r of [o1, o2]) r.wrap.toggleClass("pc-hidden", t.outW === 0);
+			for (const r of [s1, s2, s3, s4, s5]) r.wrap.toggleClass("pc-hidden", !t.shadow);
+		};
+		refreshVis();
+		draw();
+		this.scope.register(["Mod"], "Enter", () => { this.save(); return false; });
+	}
+
+	private cleanup: (() => void) | null = null;
+	onClose() { this.cleanup?.(); this.contentEl.empty(); }
 }
 
 /* ---------------------------- map settings ---------------------------- */

@@ -1,6 +1,7 @@
 import { Menu, Notice, Plugin, TFile, TFolder, normalizePath } from "obsidian";
 import { ICON_DATA } from "./icon-data";
 import { ICON_INDEX } from "./shared/icon-index";
+import { FONTS_CSS_URL } from "./shared/text";
 import { GitHub } from "./github";
 import { IMAGE_EXTS, NewMapModal } from "./modals";
 import { CustomIcon, DEFAULT_SETTINGS, PCSettings, PCSettingTab } from "./settings";
@@ -42,7 +43,21 @@ export default class PointCrawlPlugin extends Plugin {
 			}
 		}));
 		this.registerCustomIcons();
+
+		// web fonts for the text tool
+		const link = document.head.createEl("link", { attr: { rel: "stylesheet", href: FONTS_CSS_URL, id: "pointcrawl-fonts" } });
+		this.register(() => link.remove());
 	}
+
+	/* ----------------------------- palette ----------------------------- */
+
+	async addPaletteColor(c: string) {
+		c = c.toLowerCase();
+		if (!/^#[0-9a-f]{6}$/.test(c) || this.settings.palette.includes(c)) return;
+		this.settings.palette = [...this.settings.palette, c].slice(-36);
+		await this.saveSettings();
+	}
+	async removePaletteColor(c: string) { this.settings.palette = this.settings.palette.filter((x) => x !== c); await this.saveSettings(); }
 
 	/* ------------------------------ icons ------------------------------ */
 
@@ -65,7 +80,7 @@ export default class PointCrawlPlugin extends Plugin {
 		while (this.app.vault.getAbstractFileByPath(path)) path = normalizePath(`${dir}${name} ${++i}.pointcrawl`);
 		const d = this.settings.mapDefaults;
 		const map: MapFile = {
-			version: 1, id: uid(), name, image: image.path, nodes: [], drawings: [],
+			version: 1, id: uid(), name, image: image.path, nodes: [], drawings: [], texts: [],
 			fog: { enabled: true, base: "fogged", strokes: [] },
 			settings: JSON.parse(JSON.stringify(d)),
 		};
@@ -84,6 +99,8 @@ export default class PointCrawlPlugin extends Plugin {
 			nodeDefaults: { ...DEFAULT_SETTINGS.nodeDefaults, ...legacy, ...(saved.nodeDefaults ?? {}) },
 			lineDefaults: { ...DEFAULT_SETTINGS.lineDefaults, ...(saved.lineDefaults ?? {}) },
 			customIcons: saved.customIcons ?? [],
+			palette: Array.isArray(saved.palette) ? saved.palette : [],
+			textDefaults: { ...DEFAULT_SETTINGS.textDefaults, ...(saved.textDefaults ?? {}) },
 			mapDefaults: { ...DEFAULT_SETTINGS.mapDefaults, ...(saved.mapDefaults ?? {}), fogLook: { ...DEFAULT_SETTINGS.mapDefaults.fogLook, ...(saved.mapDefaults?.fogLook ?? {}) }, scale: { ...DEFAULT_SETTINGS.mapDefaults.scale, ...(saved.mapDefaults?.scale ?? {}) } },
 			github: { ...DEFAULT_SETTINGS.github, ...(saved.github ?? {}) },
 			published: saved.published ?? {},

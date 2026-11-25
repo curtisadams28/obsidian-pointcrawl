@@ -3,7 +3,8 @@ import { IconStore } from "./icons.js";
 import { TileSource } from "./tiles.js";
 import { applyLineStyle } from "./drawing.js";
 import { formatDistance, niceBar } from "./scale.js";
-import { DEFAULT_SCALE, FogLook, MapScale, MapSettings, NodeStyle, RenderDrawing } from "./types.js";
+import { textHit, textRenderer } from "./text.js";
+import { DEFAULT_SCALE, FogLook, MapScale, MapSettings, NodeStyle, RenderDrawing, TextObj } from "./types.js";
 
 export interface RenderNode { id: string; x: number; y: number; title: string; style: NodeStyle; dim?: boolean }
 
@@ -105,6 +106,7 @@ export class MapCanvas {
 
 	nodes: RenderNode[] = [];
 	drawings: RenderDrawing[] = [];
+	texts: TextObj[] = [];
 	selectedDrawingId: string | null = null;
 	/** CSS cursor for the active tool (null = normal pointer). */
 	toolCursor: string | null = null;
@@ -137,6 +139,9 @@ export class MapCanvas {
 	private pointer: { sx: number; sy: number } | null = null;
 	private drag: { kind: "pan" | "tool" | "pinch" | "ruler"; x: number; y: number; moved: boolean; button: number; dist?: number; grab?: boolean } | null = null;
 	private panGrab = false;
+	private unsubText: () => void;
+	private samples: { t: number; x: number; y: number }[] = [];
+	private flingRaf = 0;
 	private avgColor: string | null = null;
 	private lastPointerType = "mouse";
 
@@ -159,6 +164,7 @@ export class MapCanvas {
 		this.el.style.display = "block";
 		this.ctx = this.el.getContext("2d")!;
 		this.unsubIcons = this.icons.addListener(() => this.requestDraw());
+		this.unsubText = textRenderer.onChange(() => this.requestDraw());
 		this.ro = new ResizeObserver(() => this.resize());
 		this.ro.observe(host);
 		const e = this.el;
@@ -178,6 +184,8 @@ export class MapCanvas {
 	destroy() {
 		this.ro.disconnect();
 		this.unsubIcons();
+		this.unsubText();
+		this.stopFling();
 		cancelAnimationFrame(this.raf);
 		this.el.remove();
 	}
@@ -202,6 +210,7 @@ export class MapCanvas {
 		this.el.width = Math.round(w * this.dpr); this.el.height = Math.round(h * this.dpr);
 		this.el.style.width = w + "px"; this.el.style.height = h + "px";
 		if (this.image) { this.computeFit(); if (hadFit) this.fit(); else this.clamp(); }
+		this.draw((performance.now() - this.t0) / 1000);
 		this.requestDraw();
 	}
 
@@ -212,6 +221,7 @@ export class MapCanvas {
 	}
 
 	fit() {
+		this.stopFling();
 		if (!this.image) { this.requestDraw(); return; }
 		this.computeFit();
 		this.zoom = this.fitZoom;
@@ -223,6 +233,7 @@ export class MapCanvas {
 	zoomBy(f: number) { this.zoomAt(this.vw / 2, this.vh / 2, f); }
 
 	private zoomAt(sx: number, sy: number, f: number) {
+		this.stopFling();
 		const nz = Math.min(this.maxZoom, Math.max(this.fitZoom * 0.5, this.zoom * f));
 		const k = nz / this.zoom;
 		this.tx = sx - (sx - this.tx) * k;
@@ -256,7 +267,7 @@ export class MapCanvas {
 	}
 
 	private pdown = (e: PointerEvent) => {
-		this.el.setPointerCapture(e.pointerId);
+		try { this.el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
 		this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 		if (this.pointers.size === 2) {
 			if (this.drag?.kind === "tool") this.onToolUp?.(this.info(e));
@@ -266,6 +277,8 @@ export class MapCanvas {
 			return;
 		}
 		this.lastPointerType = e.pointerType;
+		this.stopFling();
+		this.samples = [];
 		// Ctrl+click is a right click on macOS
 		const button = e.button === 0 && e.ctrlKey && /Mac/.test(navigator.platform) ? 2 : e.button;
 		const info = this.info(e, button);
@@ -300,6 +313,8 @@ export class MapCanvas {
 				this.tx += e.clientX - prev.x; this.ty += e.clientY - prev.y;
 				this.clamp();
 				if (d.grab) this.panGrab = true;
+				this.samples.push({ t: e.timeStamp, x: e.clientX, y: e.clientY });
+				if (this.samples.length > 8) this.samples.shift();
 			}
 		} else if (d?.kind === "ruler") {
 			if (this.ruler) this.ruler.cursor = [this.info(e).ux, this.info(e).uy];
@@ -323,6 +338,7 @@ export class MapCanvas {
 		const info = this.info(e, d.button);
 		if (d.kind === "tool") this.onToolUp?.(info);
 		else if (d.kind === "ruler") this.rulerUp();
+		else if (d.kind === "pan" && d.moved && e.type === "pointerup" && e.pointerType !== "mouse") this.fling(e.timeStamp);
 		else if (!d.moved && e.type === "pointerup") {
 			if (d.button === 0) this.onClick?.(info);
 			else if (d.button === 2) this.onContext?.(info, e); // a plain right click, not a drag
@@ -341,6 +357,65 @@ export class MapCanvas {
 		const r = this.el.getBoundingClientRect();
 		this.zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0016)));
 	};
+
+	/* ------------------------- touch momentum ------------------------- */
+
+	private stopFling() { if (this.flingRaf) { cancelAnimationFrame(this.flingRaf); this.flingRaf = 0; } }
+
+	/** Keep gliding after a touch swipe, slowing down smoothly. Faster swipes travel further. */
+	private fling(now: number) {
+		const s = this.samples.filter((p) => now - p.t < 100);
+		this.samples = [];
+		if (s.length < 2) return;
+		const a = s[0], b = s[s.length - 1], dt = b.t - a.t;
+		if (dt < 1 || now - b.t > 60) return; // finger paused before lifting
+		const cap = 6;
+		let vx = (b.x - a.x) / dt, vy = (b.y - a.y) / dt; // px per ms
+		const sp = Math.hypot(vx, vy);
+		if (sp < 0.12) return;
+		if (sp > cap) { vx *= cap / sp; vy *= cap / sp; }
+		const tau = 380; // ms; distance travelled = velocity x tau
+		let last = performance.now();
+		const step = (t: number) => {
+			const dtm = Math.min(48, t - last); last = t;
+			const k = Math.exp(-dtm / tau), dx = vx * tau * (1 - k), dy = vy * tau * (1 - k);
+			vx *= k; vy *= k;
+			const ox = this.tx + dx, oy = this.ty + dy;
+			this.tx = ox; this.ty = oy;
+			this.clamp();
+			if (this.tx !== ox) vx = 0; // hit the edge
+			if (this.ty !== oy) vy = 0;
+			this.requestDraw();
+			this.flingRaf = Math.hypot(vx, vy) > 0.02 ? requestAnimationFrame(step) : 0;
+		};
+		this.flingRaf = requestAnimationFrame(step);
+	}
+
+	/** Topmost text under a point (map units), if any. */
+	hitText(ux: number, uy: number, pad = 0): TextObj | null {
+		for (let i = this.texts.length - 1; i >= 0; i--) if (textHit(this.texts[i], ux, uy, pad)) return this.texts[i];
+		return null;
+	}
+
+	private drawTexts() {
+		if (!this.texts.length || !this.image) return;
+		const ctx = this.ctx, s = this.unitScale;
+		for (const t of this.texts) {
+			const lay = textRenderer.layout(t);
+			const sx = this.tx + t.x * s, sy = this.ty + t.y * s, em = t.size * s; // css px per em
+			const r = Math.max(lay.box.x1 - lay.box.x0, lay.box.y1 - lay.box.y0) * em;
+			if (sx < -r || sy < -r || sx > this.vw + r || sy > this.vh + r || em * 0.3 < 1) continue;
+			const spr = textRenderer.sprite(t, em * this.dpr);
+			if (!spr) continue;
+			const f = (em * this.dpr) / spr.ppe / this.dpr;
+			ctx.save();
+			ctx.translate(sx, sy);
+			if (t.rot) ctx.rotate(t.rot);
+			ctx.scale(f, f);
+			ctx.drawImage(spr.canvas, -spr.ax, -spr.ay);
+			ctx.restore();
+		}
+	}
 
 	get unitScale() { return this.zoom * (this.dims?.w ?? 1); }
 
@@ -443,6 +518,7 @@ export class MapCanvas {
 		if (this.fogOutside && this.fogMask) this.fillOutsideTint();
 		this.drawTiles();
 		this.drawDrawings();
+		this.drawTexts();
 
 		if (this.fogMask && this.fogOpacity > 0) {
 			this.fogRenderer.draw(ctx, this.fogMask, { zoom: this.zoom, tx: this.tx, ty: this.ty, vw: this.vw, vh: this.vh }, im.w, im.h, this.fogLook, this.fogOpacity, t, this.fogOutside);

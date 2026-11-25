@@ -1,7 +1,7 @@
 import { Menu, Notice, TFile, TextFileView, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
 import type PointCrawlPlugin from "./main";
 import { PublishQueue, playerUrl, textToBase64, toBase64 } from "./github";
-import { CalibrateModal, ConfirmModal, ImagePickerModal, MapSettingsModal, NodeModal } from "./modals";
+import { CalibrateModal, ConfirmModal, ImagePickerModal, MapSettingsModal, NodeModal, TextModal, openPalette } from "./modals";
 import { FogMask } from "./shared/fog";
 import { LiveHost, topicFor } from "./shared/live";
 import { unitShort } from "./shared/scale";
@@ -9,12 +9,16 @@ import { MapCanvas, PointerInfo, RenderNode } from "./shared/mapcanvas";
 import { BUILD_VERSION, TILE_SIZE, buildTiles } from "./tilebuilder";
 import { TiledSource } from "./tiledsource";
 import { TileMeta } from "./tilestore";
-import { applyLineStyle, eraseFree, penD, simplify, smoothD } from "./shared/drawing";
-import { DEFAULT_SCALE, DEFAULT_FOG_LOOK, DEFAULT_MAP_SETTINGS, DashStyle, Drawing, FogStroke, LineStyle, MapFile, PCNode, PenAnchor, PublishedState, uid } from "./shared/types";
+import { addPointNear, applyLineStyle, deleteAnchor, dragHandle, eraseFree, moveAnchor, nearestOnDrawing, penD, rebuildD, simplify, smoothD, translateDrawing } from "./shared/drawing";
+import { textCorners } from "./shared/text";
+import { DEFAULT_SCALE, DEFAULT_FOG_LOOK, DEFAULT_MAP_SETTINGS, DashStyle, Drawing, FogStroke, LineStyle, MapFile, PCNode, PenAnchor, PublishedState, TextObj, uid } from "./shared/types";
 
 export const VIEW_TYPE = "pointcrawl-map";
 type Mode = "edit" | "view" | "player";
-type Tool = "select" | "pen" | "free" | "erase" | "reveal" | "hide";
+type Tool = "select" | "pen" | "free" | "erase" | "text" | "reveal" | "hide";
+/** Single-key tool shortcuts (Edit mode). */
+const SHORTCUTS: Record<string, Tool> = { v: "select", p: "pen", b: "free", e: "erase", t: "text", f: "reveal", g: "hide" };
+type EditKind = "pt" | "in" | "out" | "dmove" | "tmove" | "tscale" | "trot";
 const FOG_TOOLS: Tool[] = ["reveal", "hide"];
 const LINE_UNIT = 0.0004; // width slider step, as a fraction of image width
 
@@ -31,6 +35,7 @@ export function normalizeMap(raw: any, plugin: PointCrawlPlugin): MapFile {
 		image: raw.image || "",
 		nodes: Array.isArray(raw.nodes) ? raw.nodes : [],
 		drawings: Array.isArray(raw.drawings) ? raw.drawings : [],
+		texts: Array.isArray(raw.texts) ? raw.texts : [],
 		fog: { enabled: raw.fog?.enabled ?? true, base: raw.fog?.base ?? "fogged", strokes: Array.isArray(raw.fog?.strokes) ? raw.fog.strokes : [] },
 		settings: { ...DEFAULT_MAP_SETTINGS, ...d, ...(raw.settings ?? {}), fogLook: { ...DEFAULT_FOG_LOOK, ...d.fogLook, ...(raw.settings?.fogLook ?? {}) }, scale: { ...DEFAULT_SCALE, ...d.scale, ...(raw.settings?.scale ?? {}) } },
 	};
@@ -55,6 +60,10 @@ export class PointCrawlView extends TextFileView {
 	private eraserSize: number;
 	private drawUndo: string[] = [];
 	private selDrawing: string | null = null;
+	private selText: string | null = null;
+	private selAnchor: number | null = null;
+	private edit: { kind: EditKind; idx: number; last: [number, number]; moved: boolean; d0?: number; base?: number } | null = null;
+	private pendingText: { x: number; y: number; id?: string } | null = null;
 	private free: number[] | null = null;
 	private erasing = false;
 	private eraseSnap = false;
@@ -268,7 +277,8 @@ export class PointCrawlView extends TextFileView {
 		c.fogLook = { ...m.settings.fogLook, animate: m.settings.fogLook.animate && (this.mode === "player" || this.plugin.settings.animateInEditor) };
 		c.fogOpacity = this.mode === "player" ? m.settings.fogLook.density : this.plugin.settings.editorFogOpacity;
 		c.brush = edit && FOG_TOOLS.includes(this.tool) ? { r: this.brushSize } : edit && this.tool === "erase" ? { r: this.eraserSize } : null;
-		c.toolCursor = edit && (this.tool === "pen" || this.tool === "free") ? "crosshair" : null;
+		c.toolCursor = edit && (this.tool === "pen" || this.tool === "free") ? "crosshair" : edit && this.tool === "text" ? "text" : null;
+		c.texts = m.texts;
 		c.scale = m.settings.scale;
 		c.fogOutside = this.mode === "player";
 		c.drawings = m.drawings;
@@ -312,17 +322,21 @@ export class PointCrawlView extends TextFileView {
 		this.btn("mode", "view", "eye", "View (click pins to open notes)", () => this.setMode("view"));
 		this.btn("mode", "player", "users", "Preview what players see", () => this.setMode("player"));
 
-		this.btn("tools", "select", "mouse-pointer-2", "Select. Drag nodes to move them; double-click or right-click the map to add one", () => this.setTool("select"));
-		this.btn("tools", "pen", "pen-tool", "Pen: click for corners, click-drag for curves. Enter or double-click to finish, click the first point to close", () => this.setTool("pen"));
-		this.btn("tools", "free", "brush", "Freehand line", () => this.setTool("free"));
-		this.btn("tools", "erase", "eraser", "Eraser for lines", () => this.setTool("erase"));
-		this.btn("fogtools", "reveal", "cloud-off", "Reveal fog", () => this.setTool("reveal"));
-		this.btn("fogtools", "hide", "cloud-fog", "Add fog back", () => this.setTool("hide"));
+		this.btn("tools", "select", "mouse-pointer-2", "Select (V). Drag nodes, lines and text to move them; double-click or right-click the map to add a node", () => this.setTool("select"));
+		this.btn("tools", "pen", "pen-tool", "Pen (P): click for corners, click-drag for curves. Enter or double-click to finish, click the first point to close", () => this.setTool("pen"));
+		this.btn("tools", "free", "brush", "Freehand line (B)", () => this.setTool("free"));
+		this.btn("tools", "erase", "eraser", "Eraser for lines (E)", () => this.setTool("erase"));
+		this.btn("tools", "text", "type", "Text (T): click the map to add text", () => this.setTool("text"));
+		this.btn("fogtools", "reveal", "cloud-off", "Reveal fog (F)", () => this.setTool("reveal"));
+		this.btn("fogtools", "hide", "cloud-fog", "Add fog back (G)", () => this.setTool("hide"));
 
 		// line style (pen / freehand / selected line)
 		const lg = (this.el.groups["line"] = this.el.toolbar.createDiv({ cls: "pc-group pc-group-line" }));
 		const color = lg.createEl("input", { type: "color", cls: "pc-color", attr: { "aria-label": "Line colour" } });
 		color.addEventListener("input", () => this.setLine({ color: color.value }));
+		const pal = lg.createDiv({ cls: "clickable-icon pc-btn", attr: { "aria-label": "Saved colours", "data-tooltip-position": "bottom" } });
+		setIcon(pal, "palette");
+		pal.addEventListener("click", () => openPalette(pal, this.plugin, () => this.lineCtl.color.value, (c) => { this.lineCtl.color.value = c; this.setLine({ color: c }); }));
 		const wrap = lg.createDiv({ cls: "pc-slider", attr: { "aria-label": "Line width" } });
 		wrap.createSpan({ text: "Width" });
 		const width = wrap.createEl("input", { type: "range", attr: { min: "1", max: "20", step: "1" } });
@@ -347,8 +361,8 @@ export class PointCrawlView extends TextFileView {
 		this.btn("right", "link", "link", "Copy player link", () => this.copyLink());
 		this.btn("right", "publish", "cloud-upload", "Publish to player site now", async () => { if (await this.queue.run()) new Notice("Player site updated."); });
 		this.btn("right", "live", "radio", "Live updates to player site", () => this.toggleLive());
-		this.btn("right", "ruler", "ruler", "Ruler: drag to measure, Shift+drag to add a leg, Esc to clear", () => this.setRuler(!this.canvas?.rulerActive));
-		this.btn("right", "fit", "maximize", "Fit map to window", () => this.canvas?.fit());
+		this.btn("right", "ruler", "ruler", "Ruler (R): drag to measure, Shift+drag to add a leg, Esc to clear", () => this.setRuler(!this.canvas?.rulerActive));
+		this.btn("right", "fit", "maximize", "Fit map to window (0)", () => this.canvas?.fit());
 		this.btn("right", "settings", "settings", "Map settings", () => this.openMapSettings());
 	}
 
@@ -366,7 +380,7 @@ export class PointCrawlView extends TextFileView {
 		const b = this.el?.buttons, g = this.el?.groups;
 		if (!b) return;
 		for (const k of ["edit", "view", "player"]) b[k].toggleClass("is-active", this.mode === k);
-		for (const k of ["select", "pen", "free", "erase", "reveal", "hide"]) b[k].toggleClass("is-active", this.tool === k);
+		for (const k of ["select", "pen", "free", "erase", "text", "reveal", "hide"]) b[k].toggleClass("is-active", this.tool === k);
 		b["live"].toggleClass("is-active", this.live);
 		b["ruler"].toggleClass("is-active", !!this.canvas?.rulerActive);
 		const edit = this.mode === "edit";
@@ -387,14 +401,16 @@ export class PointCrawlView extends TextFileView {
 	private setMode(m: Mode) {
 		this.finishPen();
 		this.mode = m;
-		if (m !== "edit") { this.tool = "select"; this.selectedId = null; this.selDrawing = null; }
+		if (m !== "edit") { this.tool = "select"; this.clearSel(); }
 		this.syncUI(); this.refresh();
 	}
+	private clearSel() { this.selectedId = null; this.selDrawing = null; this.selText = null; this.selAnchor = null; }
+
 	private setTool(t: Tool) {
 		this.finishPen();
 		if (this.canvas?.rulerActive) this.setRuler(false);
 		this.tool = t;
-		if (t !== "select") { this.selectedId = null; this.selDrawing = null; }
+		this.clearSel();
 		this.syncUI(); this.refresh();
 	}
 
@@ -413,21 +429,13 @@ export class PointCrawlView extends TextFileView {
 
 	private bindCanvas(c: MapCanvas) {
 		c.el.addEventListener("pointerdown", () => this.contentEl.focus({ preventScroll: true }));
-
 		c.onRulerDone = (len) => this.onRulerDone(len);
 
 		c.onPointerDown = (p) => {
 			if (this.mode !== "edit" || !this.map) return false;
 			switch (this.tool) {
-				case "select": {
-					if (!p.node) return false;
-					if (p.ctrl) { this.openNote(p.node.id, true); return true; }
-					this.selectedId = p.node.id; this.selDrawing = null;
-					const n = this.findNode(p.node.id)!;
-					this.dragNode = { id: n.id, ox: n.x - p.nx, oy: n.y - p.ny, moved: false };
-					this.syncUI(); this.refresh();
-					return true;
-				}
+				case "select": return this.selectDown(p);
+				case "text": { this.pendingText = { x: p.ux, y: p.uy, id: c.hitText(p.ux, p.uy)?.id }; return true; }
 				case "free": this.free = [p.ux, p.uy]; return true;
 				case "pen": this.penDown(p); return true;
 				case "erase": this.erasing = true; this.eraseSnap = false; this.eraseAt(p); return true;
@@ -436,6 +444,7 @@ export class PointCrawlView extends TextFileView {
 		};
 
 		c.onToolMove = (p) => {
+			if (this.edit) return this.editMove(p);
 			if (this.dragNode) {
 				const n = this.findNode(this.dragNode.id);
 				if (!n) return;
@@ -451,11 +460,13 @@ export class PointCrawlView extends TextFileView {
 		};
 
 		c.onToolUp = () => {
+			if (this.edit) { const moved = this.edit.moved; this.edit = null; if (moved) this.changed(); }
 			if (this.dragNode) { const moved = this.dragNode.moved; this.dragNode = null; if (moved) this.changed(); }
 			if (this.stroke) this.endStroke();
 			if (this.free) this.endFree();
 			if (this.pen) this.pen.dragging = false;
 			if (this.erasing) { this.erasing = false; if (this.eraseSnap) this.changed(); }
+			if (this.pendingText) { const t = this.pendingText; this.pendingText = null; if (t.id) this.editText(t.id); else this.addText(t.x, t.y); }
 		};
 
 		c.onPointerMove = (p) => {
@@ -465,13 +476,11 @@ export class PointCrawlView extends TextFileView {
 		c.onClick = (p) => {
 			if (p.node) {
 				if (this.mode !== "edit" && this.plugin.settings.openOnClick) this.openNote(p.node.id, p.ctrl);
-				else if (this.mode === "edit") { this.selectedId = p.node.id; this.selDrawing = null; this.syncUI(); this.refresh(); }
+				else if (this.mode === "edit") { this.clearSel(); this.selectedId = p.node.id; this.syncUI(); this.refresh(); }
 				return;
 			}
 			if (this.mode !== "edit" || this.tool !== "select") return;
-			const hit = this.drawingAt(p.ux, p.uy);
-			this.selDrawing = hit?.id ?? null;
-			this.selectedId = null;
+			this.clearSel();
 			this.syncUI(); this.refresh();
 		};
 
@@ -487,6 +496,10 @@ export class PointCrawlView extends TextFileView {
 				return;
 			}
 			if (this.tool !== "select") return;
+			const sd = this.selDrawingObj();
+			if (sd && this.addPoint(sd, p.ux, p.uy)) return;
+			const tx = c.hitText(p.ux, p.uy, 4 / c.unitScale);
+			if (tx) { this.editText(tx.id); return; }
 			if (p.node) this.editNode(p.node.id);
 			else if (p.nx >= 0 && p.nx <= 1 && p.ny >= 0 && p.ny <= 1) this.addNode(p.nx, p.ny);
 		};
@@ -495,6 +508,7 @@ export class PointCrawlView extends TextFileView {
 			if (this.mode !== "edit" || !this.map) return;
 			if (this.pen) { this.finishPen(); return; }
 			const menu = new Menu();
+			const tol = 9 / c.unitScale;
 			if (p.node) {
 				const id = p.node.id;
 				menu.addItem((i) => i.setTitle("Edit node").setIcon("pencil").onClick(() => this.editNode(id)));
@@ -503,14 +517,227 @@ export class PointCrawlView extends TextFileView {
 				menu.addSeparator();
 				menu.addItem((i) => i.setTitle("Delete").setIcon("trash").onClick(() => this.deleteNode(id)));
 			} else {
-				const inside = p.nx >= 0 && p.nx <= 1 && p.ny >= 0 && p.ny <= 1;
-				if (inside) menu.addItem((i) => i.setTitle("Add node here").setIcon("map-pin").onClick(() => this.addNode(p.nx, p.ny)));
+				const sd = this.selDrawingObj();
+				const pt = sd ? this.hitHandle(sd, p.ux, p.uy, tol) : null;
+				const tx = c.hitText(p.ux, p.uy, 4 / c.unitScale);
+				if (sd && pt && pt.kind === "pt") {
+					menu.addItem((i) => i.setTitle("Delete point").setIcon("minus-circle").onClick(() => this.deletePoint(sd, pt.idx)));
+					if (sd.anchors) {
+						menu.addItem((i) => i.setTitle("Make smooth").setIcon("spline").onClick(() => this.setSmooth(sd, pt.idx, true)));
+						menu.addItem((i) => i.setTitle("Make corner").setIcon("square").onClick(() => this.setSmooth(sd, pt.idx, false)));
+					}
+				} else if (sd && nearestOnDrawing(sd, p.ux, p.uy) && nearestOnDrawing(sd, p.ux, p.uy)!.dist < tol) {
+					menu.addItem((i) => i.setTitle("Add point here").setIcon("plus-circle").onClick(() => this.addPoint(sd, p.ux, p.uy)));
+				}
+				if (tx) {
+					menu.addItem((i) => i.setTitle("Edit text").setIcon("pencil").onClick(() => this.editText(tx.id)));
+					menu.addItem((i) => i.setTitle("Duplicate text").setIcon("copy").onClick(() => this.duplicateText(tx.id)));
+					menu.addItem((i) => i.setTitle("Delete text").setIcon("trash").onClick(() => this.deleteText(tx.id)));
+				}
 				const dr = this.drawingAt(p.ux, p.uy);
 				if (dr) menu.addItem((i) => i.setTitle("Delete line").setIcon("trash").onClick(() => this.deleteDrawing(dr.id)));
-				if (!inside && !dr) return;
+				const inside = p.nx >= 0 && p.nx <= 1 && p.ny >= 0 && p.ny <= 1;
+				const hadItems = !!(sd && (pt || (nearestOnDrawing(sd, p.ux, p.uy)?.dist ?? Infinity) < tol)) || !!tx || !!dr;
+				if (inside) { if (hadItems) menu.addSeparator(); menu.addItem((i) => i.setTitle("Add node here").setIcon("map-pin").onClick(() => this.addNode(p.nx, p.ny))); }
+				else if (!sd && !tx && !dr) return;
 			}
 			menu.showAtMouseEvent(ev);
 		};
+	}
+
+	/* ------------------- selecting, moving and editing shapes ------------------- */
+
+	private selDrawingObj(): Drawing | null { return (this.selDrawing && this.map?.drawings.find((d) => d.id === this.selDrawing)) || null; }
+	private selTextObj(): TextObj | null { return (this.selText && this.map?.texts.find((t) => t.id === this.selText)) || null; }
+
+	private selectDown(p: PointerInfo): boolean {
+		const c = this.canvas!, tol = 9 / c.unitScale;
+		const d = this.selDrawingObj();
+		if (d) {
+			const h = this.hitHandle(d, p.ux, p.uy, tol);
+			if (h) {
+				if (p.alt && h.kind === "pt") { this.deletePoint(d, h.idx); return true; }
+				this.selAnchor = h.idx;
+				this.edit = { kind: h.kind, idx: h.idx, last: [p.ux, p.uy], moved: false };
+				this.syncUI(); this.refresh();
+				return true;
+			}
+		}
+		const t = this.selTextObj();
+		if (t) {
+			const k = this.hitTextHandle(t, p.ux, p.uy, tol);
+			if (k) { this.edit = { kind: k, idx: 0, last: [p.ux, p.uy], moved: false, d0: Math.hypot(p.ux - t.x, p.uy - t.y) || 1e-6, base: t.size }; return true; }
+		}
+		if (p.node) {
+			if (p.ctrl) { this.openNote(p.node.id, true); return true; }
+			this.clearSel(); this.selectedId = p.node.id;
+			const n = this.findNode(p.node.id)!;
+			this.dragNode = { id: n.id, ox: n.x - p.nx, oy: n.y - p.ny, moved: false };
+			this.syncUI(); this.refresh();
+			return true;
+		}
+		const tx = c.hitText(p.ux, p.uy, 4 / c.unitScale);
+		if (tx) {
+			this.clearSel(); this.selText = tx.id;
+			this.edit = { kind: "tmove", idx: 0, last: [p.ux, p.uy], moved: false };
+			this.syncUI(); this.refresh();
+			return true;
+		}
+		const dr = this.drawingAt(p.ux, p.uy);
+		if (dr) {
+			const keep = dr.id === this.selDrawing;
+			this.clearSel(); this.selDrawing = dr.id;
+			if (keep) this.selAnchor = null;
+			this.edit = { kind: "dmove", idx: 0, last: [p.ux, p.uy], moved: false };
+			this.syncUI(); this.refresh();
+			return true;
+		}
+		return false; // empty space: pan
+	}
+
+	private editMove(p: PointerInfo) {
+		const e = this.edit, c = this.canvas;
+		if (!e || !c) return;
+		if (!e.moved) {
+			if (Math.hypot(p.ux - e.last[0], p.uy - e.last[1]) * c.unitScale < 3) return;
+			e.moved = true;
+			this.pushUndo();
+		}
+		const dx = p.ux - e.last[0], dy = p.uy - e.last[1];
+		e.last = [p.ux, p.uy];
+		const d = this.selDrawingObj(), t = this.selTextObj();
+		switch (e.kind) {
+			case "pt": if (d) moveAnchor(d, e.idx, dx, dy); break;
+			case "in": case "out": if (d) dragHandle(d, e.idx, e.kind, p.ux, p.uy, p.alt); break;
+			case "dmove": if (d) translateDrawing(d, dx, dy); break;
+			case "tmove": if (t) { t.x += dx; t.y += dy; } break;
+			case "tscale": if (t) t.size = Math.min(0.5, Math.max(0.004, (e.base ?? t.size) * (Math.hypot(p.ux - t.x, p.uy - t.y) / (e.d0 ?? 1)))); break;
+			case "trot": if (t) { let a = Math.atan2(p.uy - t.y, p.ux - t.x) + Math.PI / 2; if (p.shift) a = Math.round(a / (Math.PI / 12)) * (Math.PI / 12); t.rot = a; } break;
+		}
+		c.requestDraw();
+	}
+
+	private hitHandle(d: Drawing, ux: number, uy: number, tol: number): { kind: "pt" | "in" | "out"; idx: number } | null {
+		if (d.anchors) {
+			const a = this.selAnchor != null ? d.anchors[this.selAnchor] : null;
+			if (a) {
+				for (const [k, x, y] of [["in", a.ix, a.iy], ["out", a.ox, a.oy]] as const)
+					if (Math.hypot(x - a.x, y - a.y) > 1e-9 && Math.hypot(ux - x, uy - y) < tol) return { kind: k, idx: this.selAnchor! };
+			}
+			for (let i = d.anchors.length - 1; i >= 0; i--) if (Math.hypot(ux - d.anchors[i].x, uy - d.anchors[i].y) < tol) return { kind: "pt", idx: i };
+		} else if (d.pts) {
+			for (let i = d.pts.length / 2 - 1; i >= 0; i--) if (Math.hypot(ux - d.pts[i * 2], uy - d.pts[i * 2 + 1]) < tol) return { kind: "pt", idx: i };
+		}
+		return null;
+	}
+
+	/** Handle positions for a selected text, in map units. */
+	private textHandles(t: TextObj) {
+		const c = textCorners(t), px = 1 / (this.canvas?.unitScale ?? 1);
+		const mid: [number, number] = [(c[0][0] + c[1][0]) / 2, (c[0][1] + c[1][1]) / 2];
+		const ctr: [number, number] = [(c[0][0] + c[2][0]) / 2, (c[0][1] + c[2][1]) / 2];
+		const l = Math.hypot(mid[0] - ctr[0], mid[1] - ctr[1]) || 1e-9;
+		const rot: [number, number] = [mid[0] + ((mid[0] - ctr[0]) / l) * 26 * px, mid[1] + ((mid[1] - ctr[1]) / l) * 26 * px];
+		return { corners: c, mid, rot };
+	}
+
+	private hitTextHandle(t: TextObj, ux: number, uy: number, tol: number): "tscale" | "trot" | null {
+		const h = this.textHandles(t);
+		if (Math.hypot(ux - h.rot[0], uy - h.rot[1]) < tol) return "trot";
+		for (const [x, y] of h.corners) if (Math.hypot(ux - x, uy - y) < tol) return "tscale";
+		return null;
+	}
+
+	private addPoint(d: Drawing, ux: number, uy: number): boolean {
+		const c = this.canvas;
+		if (!c) return false;
+		const tol = 10 / c.unitScale, n = nearestOnDrawing(d, ux, uy);
+		if (!n || n.dist > tol) return false;
+		this.pushUndo();
+		const idx = addPointNear(d, ux, uy, tol);
+		if (idx < 0) return false;
+		this.selAnchor = idx;
+		this.changed();
+		return true;
+	}
+
+	private deletePoint(d: Drawing, idx: number) {
+		this.pushUndo();
+		if (!deleteAnchor(d, idx)) { this.map!.drawings = this.map!.drawings.filter((x) => x.id !== d.id); this.selDrawing = null; }
+		this.selAnchor = null;
+		this.syncUI();
+		this.changed();
+	}
+
+	/** Turn a pen point into a smooth curve point (handles follow its neighbours) or a sharp corner. */
+	private setSmooth(d: Drawing, idx: number, smooth: boolean) {
+		const a = d.anchors?.[idx];
+		if (!a || !d.anchors) return;
+		this.pushUndo();
+		if (!smooth) { a.ix = a.ox = a.x; a.iy = a.oy = a.y; }
+		else {
+			const n = d.anchors.length, prev = d.anchors[(idx - 1 + n) % n], next = d.anchors[(idx + 1) % n];
+			const p0 = idx > 0 || d.closed ? prev : a, p1 = idx < n - 1 || d.closed ? next : a;
+			const dx = p1.x - p0.x, dy = p1.y - p0.y, l = Math.hypot(dx, dy) || 1e-9;
+			const len = 0.3 * Math.min(Math.hypot(a.x - p0.x, a.y - p0.y) || 1, Math.hypot(p1.x - a.x, p1.y - a.y) || 1);
+			a.ox = a.x + (dx / l) * len; a.oy = a.y + (dy / l) * len; a.ix = a.x - (dx / l) * len; a.iy = a.y - (dy / l) * len;
+		}
+		rebuildD(d);
+		this.changed();
+	}
+
+	/* ------------------------------ text objects ------------------------------ */
+
+	private rememberTextStyle(t: TextObj) {
+		const { id: _i, x: _x, y: _y, rot: _r, text: _t, ...style } = t;
+		this.plugin.settings.textDefaults = style;
+		void this.plugin.saveSettings();
+	}
+
+	private addText(ux: number, uy: number) {
+		if (!this.map) return;
+		const t: TextObj = { id: uid(), x: ux, y: uy, rot: 0, text: "Text", ...this.plugin.settings.textDefaults };
+		new TextModal(this.app, this.plugin, t, true, (nt) => {
+			this.pushUndo();
+			this.map!.texts.push(nt);
+			this.rememberTextStyle(nt);
+			this.setTool("select");
+			this.selText = nt.id;
+			this.syncUI();
+			this.changed();
+		}).open();
+	}
+
+	private editText(id: string) {
+		const t = this.map?.texts.find((x) => x.id === id);
+		if (!t) return;
+		new TextModal(this.app, this.plugin, t, false, (nt) => {
+			this.pushUndo();
+			Object.assign(t, nt);
+			this.rememberTextStyle(t);
+			this.clearSel(); this.selText = t.id;
+			this.changed();
+		}, () => this.deleteText(id)).open();
+	}
+
+	private duplicateText(id: string) {
+		const t = this.map?.texts.find((x) => x.id === id);
+		if (!t || !this.map) return;
+		this.pushUndo();
+		const copy: TextObj = JSON.parse(JSON.stringify(t));
+		copy.id = uid(); copy.x += 0.02; copy.y += 0.02;
+		this.map.texts.push(copy);
+		this.clearSel(); this.selText = copy.id;
+		this.changed();
+	}
+
+	private deleteText(id: string) {
+		if (!this.map) return;
+		this.pushUndo();
+		this.map.texts = this.map.texts.filter((t) => t.id !== id);
+		if (this.selText === id) this.selText = null;
+		this.syncUI();
+		this.changed();
 	}
 
 	private onKeyDown = (e: KeyboardEvent) => {
@@ -518,16 +745,25 @@ export class PointCrawlView extends TextFileView {
 		if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
 		const edit = this.mode === "edit";
 		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && edit) { e.preventDefault(); this.undo(); return; }
+		if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+			const k = e.key.toLowerCase(), tool = SHORTCUTS[k];
+			if (edit && tool && !(FOG_TOOLS.includes(tool) && !this.map?.fog.enabled)) { e.preventDefault(); this.setTool(tool); return; }
+			if (k === "r") { e.preventDefault(); this.setRuler(!this.canvas?.rulerActive); return; }
+			if (k === "0") { e.preventDefault(); this.canvas?.fit(); return; }
+		}
 		if (e.key === " " && this.canvas) { this.canvas.spaceHeld = true; e.preventDefault(); }
 		else if (e.key === "Enter" && this.pen) { e.preventDefault(); this.finishPen(); }
 		else if (e.key === "Escape") {
 			if (this.canvas?.rulerActive) { if (this.canvas.hasRuler) this.canvas.clearRuler(); else this.setRuler(false); return; }
-			if (this.pen) { this.pen = null; this.canvas?.requestDraw(); } else { this.selectedId = null; this.selDrawing = null; this.syncUI(); this.refresh(); }
+			if (this.pen) { this.pen = null; this.canvas?.requestDraw(); } else { this.clearSel(); this.syncUI(); this.refresh(); }
 		}
 		else if ((e.key === "Delete" || e.key === "Backspace") && edit) {
 			e.preventDefault();
+			const sd = this.selDrawingObj();
 			if (this.pen) { this.pen.anchors.pop(); if (!this.pen.anchors.length) this.pen = null; this.canvas?.requestDraw(); }
+			else if (sd && this.selAnchor != null) this.deletePoint(sd, this.selAnchor);
 			else if (this.selectedId) this.deleteNode(this.selectedId);
+			else if (this.selText) this.deleteText(this.selText);
 			else if (this.selDrawing) this.deleteDrawing(this.selDrawing);
 		}
 		else if ((e.key === "[" || e.key === "]") && (FOG_TOOLS.includes(this.tool) || this.tool === "erase")) {
@@ -545,7 +781,7 @@ export class PointCrawlView extends TextFileView {
 
 	private pushUndo() {
 		if (!this.map) return;
-		this.drawUndo.push(JSON.stringify(this.map.drawings));
+		this.drawUndo.push(JSON.stringify({ d: this.map.drawings, t: this.map.texts }));
 		if (this.drawUndo.length > 40) this.drawUndo.shift();
 	}
 
@@ -553,8 +789,9 @@ export class PointCrawlView extends TextFileView {
 		if (FOG_TOOLS.includes(this.tool)) return this.undoStroke();
 		const snap = this.drawUndo.pop();
 		if (!snap || !this.map) return void new Notice("Nothing to undo.");
-		this.map.drawings = JSON.parse(snap);
-		this.selDrawing = null;
+		const s = JSON.parse(snap) as { d: Drawing[]; t: TextObj[] };
+		this.map.drawings = s.d; this.map.texts = s.t;
+		this.clearSel();
 		this.pen = null;
 		this.syncUI();
 		this.changed();
@@ -654,11 +891,45 @@ export class PointCrawlView extends TextFileView {
 		} else this.canvas?.requestDraw();
 	}
 
+	/** Points and handles of the selected line, and the box + handles of the selected text. */
+	private drawSelection(ctx: CanvasRenderingContext2D, px: number) {
+		const blue = "#4da3ff";
+		ctx.setLineDash([]);
+		ctx.lineWidth = 1.3 * px;
+		const sq = (x: number, y: number, on: boolean) => { ctx.fillStyle = on ? blue : "#fff"; ctx.strokeStyle = blue; ctx.beginPath(); ctx.rect(x - 4 * px, y - 4 * px, 8 * px, 8 * px); ctx.fill(); ctx.stroke(); };
+		const d = this.selDrawingObj();
+		if (d?.anchors) {
+			d.anchors.forEach((a, i) => {
+				if (i === this.selAnchor) {
+					for (const [hx, hy] of [[a.ix, a.iy], [a.ox, a.oy]]) {
+						if (Math.hypot(hx - a.x, hy - a.y) < 1e-9) continue;
+						ctx.strokeStyle = blue; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(hx, hy); ctx.stroke();
+						ctx.fillStyle = blue; ctx.beginPath(); ctx.arc(hx, hy, 3.5 * px, 0, Math.PI * 2); ctx.fill();
+					}
+				}
+				sq(a.x, a.y, i === this.selAnchor);
+			});
+		} else if (d?.pts) {
+			for (let i = 0; i < d.pts.length; i += 2) sq(d.pts[i], d.pts[i + 1], i / 2 === this.selAnchor);
+		}
+		const t = this.selTextObj();
+		if (t) {
+			const h = this.textHandles(t);
+			ctx.strokeStyle = blue; ctx.setLineDash([5 * px, 4 * px]);
+			ctx.beginPath(); h.corners.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.stroke();
+			ctx.setLineDash([]);
+			ctx.beginPath(); ctx.moveTo(h.mid[0], h.mid[1]); ctx.lineTo(h.rot[0], h.rot[1]); ctx.stroke();
+			ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(h.rot[0], h.rot[1], 5 * px, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+			for (const [x, y] of h.corners) sq(x, y, false);
+		}
+	}
+
 	/** Live previews: the freehand stroke, and the pen path with anchors and handles. */
 	private drawToolOverlay = (ctx: CanvasRenderingContext2D, t: { tx: number; ty: number; s: number }) => {
 		ctx.translate(t.tx, t.ty);
 		ctx.scale(t.s, t.s);
 		const px = 1 / t.s;
+		if (this.tool === "select") this.drawSelection(ctx, px);
 		if (this.free && this.free.length >= 4) {
 			applyLineStyle(ctx, this.lineStyle, px);
 			ctx.stroke(new Path2D(smoothD(this.free)));
@@ -883,6 +1154,7 @@ export class PointCrawlView extends TextFileView {
 			image: { file, w: im.w, h: im.h },
 			nodes: visible.map((n) => ({ id: n.id, x: n.x, y: n.y, title: n.title, style: n.style })),
 			drawings: m.drawings.map((d) => ({ id: d.id, style: d.style, d: d.d })),
+			texts: m.texts,
 			customIcons,
 			fogMask: m.fog.enabled && this.mask ? this.mask.toDataURL(512) : null,
 			settings: { labelMode: m.settings.labelMode, labelSize: m.settings.labelSize, pinSize: m.settings.pinSize, nodeScaling: m.settings.nodeScaling, fogLook: m.settings.fogLook, scale: m.settings.scale },

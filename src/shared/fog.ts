@@ -190,22 +190,23 @@ export class FogRenderer {
 		const shade = mix(look.color, [40, 52, 70], 0.55);
 		const maxD = Math.max(W, H);
 		const speed = look.animate ? look.speed * maxD * 0.006 : 0;
+		// Five layers at unrelated scales and angles, so the repeat of any one tile never lines up with another.
 		const layers = [
-			{ n: "dark" as const, c: shade, tile: 0.95, a: 0.38, vx: 0.6, vy: 0.25 },
-			{ n: "a" as const, c: light, tile: 0.6, a: 0.85, vx: -1.0, vy: 0.3 },
-			{ n: "b" as const, c: light, tile: 0.34, a: 0.6, vx: 0.8, vy: -0.5 },
+			{ n: "dark" as const, c: shade, tile: 1.9, a: 0.34, rot: 0.0, vx: 0.6, vy: 0.25 },
+			{ n: "a" as const, c: light, tile: 1.3, a: 0.8, rot: 0.41, vx: -1.0, vy: 0.3 },
+			{ n: "b" as const, c: light, tile: 0.78, a: 0.55, rot: -0.71, vx: 0.8, vy: -0.5 },
+			{ n: "a" as const, c: light, tile: 0.47, a: 0.3, rot: 1.93, vx: -0.5, vy: -0.7 },
+			{ n: "dark" as const, c: shade, tile: 0.62, a: 0.16, rot: -1.21, vx: 0.3, vy: 0.8 },
 		];
+		b.setTransform(1, 0, 0, 1, 0, 0);
 		for (const L of layers) {
 			const s = (L.tile * maxD) / TEX_SIZE;
 			const dx = speed * L.vx * timeSec, dy = speed * L.vy * timeSec;
-			b.setTransform(v.zoom * q, 0, 0, v.zoom * q, v.tx * q, v.ty * q);
-			b.translate(dx, dy);
-			b.scale(s, s);
+			const pat = this.pattern(L.n, L.c);
+			pat.setTransform(new DOMMatrix().translate(v.tx * q, v.ty * q).scale(v.zoom * q).translate(dx, dy).rotate((L.rot * 180) / Math.PI).scale(s));
 			b.globalAlpha = L.a;
-			b.fillStyle = this.pattern(L.n, L.c);
-			const x0 = (-v.tx / v.zoom - dx) / s, y0 = (-v.ty / v.zoom - dy) / s;
-			const x1 = ((v.vw - v.tx) / v.zoom - dx) / s, y1 = ((v.vh - v.ty) / v.zoom - dy) / s;
-			b.fillRect(x0, y0, x1 - x0, y1 - y0);
+			b.fillStyle = pat;
+			b.fillRect(0, 0, bw, bh);
 		}
 
 		b.setTransform(1, 0, 0, 1, 0, 0);
@@ -222,6 +223,17 @@ export class FogRenderer {
 			g.imageSmoothingQuality = "high";
 			g.clearRect(0, 0, bw, bh);
 			g.drawImage(mask, mx, my, mw, mh);
+			// fade the map's edge into the fog instead of ending in a hard line
+			const f = Math.max(3, Math.min(W, H) * 0.035 * v.zoom * q);
+			const edge = (x0: number, y0: number, x1: number, y1: number, rx: number, ry: number, rw: number, rh: number) => {
+				const gr = g.createLinearGradient(x0, y0, x1, y1);
+				gr.addColorStop(0, "rgba(255,255,255,1)"); gr.addColorStop(0.35, "rgba(255,255,255,0.6)"); gr.addColorStop(1, "rgba(255,255,255,0)");
+				g.fillStyle = gr; g.fillRect(rx, ry, rw, rh);
+			};
+			edge(mx, 0, mx + f, 0, mx, my, f, mh);
+			edge(mx + mw, 0, mx + mw - f, 0, mx + mw - f, my, f, mh);
+			edge(0, my, 0, my + f, mx, my, mw, f);
+			edge(0, my + mh, 0, my + mh - f, mx, my + mh - f, mw, f);
 			// fill everything outside the map, adding (not blending) so the edge pixels don't leave a hairline
 			g.save();
 			g.beginPath(); g.rect(0, 0, bw, bh); g.rect(mx, my, mw, mh);

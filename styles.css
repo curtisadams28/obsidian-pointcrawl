@@ -67,3 +67,18 @@
 .pc-custom-row input[type=text] { flex: 1 1 auto; }
 .pc-custom-thumb { width: 36px; height: 36px; padding: 3px; border-radius: 6px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); }
 .pc-peers { font-size: var(--font-ui-smaller); color: var(--color-green, #2e8b57); margin-right: 8px; cursor: default; }
+
+/* palette + text */
+.pc-colorfield { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pc-wrap { flex-wrap: wrap; }
+.pc-swatch-add { display: grid; place-items: center; font-size: 14px; line-height: 1; color: var(--text-muted); background: var(--background-primary); }
+.pc-swatch-lg { width: 26px; height: 26px; }
+.pc-palette-mgr { margin: 6px 0 14px; }
+.pc-popover { position: fixed; z-index: 1000; width: 250px; padding: 10px; border-radius: 10px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); box-shadow: var(--shadow-l); display: flex; flex-direction: column; gap: 8px; }
+.pc-pop-title { font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.pc-textarea { resize: vertical; margin-bottom: 8px; min-height: 52px; font-family: inherit; }
+.pc-text-preview { width: 100%; margin: 0 auto 10px; display: block; }
+.pc-text-rows { max-height: 46vh; overflow-y: auto; padding-right: 6px; }
+.pc-field-sm { width: 150px; }
+.pc-toggle { width: 30px; height: 26px; padding: 0; box-shadow: none; }
+.pc-toggle.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }

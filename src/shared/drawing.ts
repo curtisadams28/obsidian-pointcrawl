@@ -1,4 +1,4 @@
-import { DashStyle, LineStyle, PenAnchor } from "./types.js";
+import { DashStyle, Drawing, LineStyle, PenAnchor } from "./types.js";
 
 const f = (n: number) => String(Math.round(n * 1e5) / 1e5);
 
@@ -94,4 +94,113 @@ export function applyLineStyle(ctx: CanvasRenderingContext2D, st: LineStyle, min
 	ctx.lineCap = st.dash === "dashed" ? "butt" : "round";
 	ctx.lineJoin = "round";
 	ctx.setLineDash(dashArray(st.dash, w));
+}
+
+/* ------------------------- editing existing lines ------------------------- */
+
+export interface Near { seg: number; t: number; x: number; y: number; dist: number }
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+function cubic(a: PenAnchor, b: PenAnchor, t: number): [number, number] {
+	const u = 1 - t, w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
+	return [w0 * a.x + w1 * a.ox + w2 * b.ix + w3 * b.x, w0 * a.y + w1 * a.oy + w2 * b.iy + w3 * b.y];
+}
+const segCount = (n: number, closed: boolean) => (closed && n > 2 ? n : n - 1);
+
+export function nearestOnPen(a: PenAnchor[], closed: boolean, ux: number, uy: number): Near | null {
+	const n = a.length;
+	if (n < 2) return null;
+	let seg = 0, t = 0, x = 0, y = 0, dist = Infinity;
+	for (let s = 0; s < segCount(n, closed); s++) {
+		const A = a[s], B = a[(s + 1) % n];
+		for (let k = 0; k <= 24; k++) {
+			const [px, py] = cubic(A, B, k / 24), d = Math.hypot(px - ux, py - uy);
+			if (d < dist) { dist = d; seg = s; t = k / 24; x = px; y = py; }
+		}
+	}
+	// refine around the best sample
+	const A = a[seg], B = a[(seg + 1) % n], t0 = t;
+	for (let k = -12; k <= 12; k++) {
+		const tt = t0 + k / 288;
+		if (tt < 0 || tt > 1) continue;
+		const [px, py] = cubic(A, B, tt), d = Math.hypot(px - ux, py - uy);
+		if (d < dist) { dist = d; t = tt; x = px; y = py; }
+	}
+	return { seg, t, x, y, dist };
+}
+
+/** Insert an anchor on segment `seg` at parameter `t`, keeping the curve's shape. Returns its index. */
+export function splitPen(a: PenAnchor[], closed: boolean, seg: number, t: number): number {
+	const n = a.length, A = a[seg], B = a[(seg + 1) % n];
+	const q0x = lerp(A.x, A.ox, t), q0y = lerp(A.y, A.oy, t);
+	const q1x = lerp(A.ox, B.ix, t), q1y = lerp(A.oy, B.iy, t);
+	const q2x = lerp(B.ix, B.x, t), q2y = lerp(B.iy, B.y, t);
+	const r0x = lerp(q0x, q1x, t), r0y = lerp(q0y, q1y, t), r1x = lerp(q1x, q2x, t), r1y = lerp(q1y, q2y, t);
+	const sx = lerp(r0x, r1x, t), sy = lerp(r0y, r1y, t);
+	A.ox = q0x; A.oy = q0y; B.ix = q2x; B.iy = q2y;
+	a.splice(seg + 1, 0, { x: sx, y: sy, ix: r0x, iy: r0y, ox: r1x, oy: r1y });
+	void closed;
+	return seg + 1;
+}
+
+export function nearestOnPoly(p: number[], ux: number, uy: number): Near | null {
+	let best: Near | null = null;
+	for (let i = 0; i + 3 < p.length; i += 2) {
+		const x0 = p[i], y0 = p[i + 1], dx = p[i + 2] - x0, dy = p[i + 3] - y0, l2 = dx * dx + dy * dy || 1e-12;
+		const t = Math.max(0, Math.min(1, ((ux - x0) * dx + (uy - y0) * dy) / l2));
+		const x = x0 + dx * t, y = y0 + dy * t, d = Math.hypot(x - ux, y - uy);
+		if (!best || d < best.dist) best = { seg: i / 2, t, x, y, dist: d };
+	}
+	return best;
+}
+
+export function nearestOnDrawing(d: Drawing, ux: number, uy: number): Near | null {
+	return d.kind === "pen" && d.anchors ? nearestOnPen(d.anchors, !!d.closed, ux, uy) : d.pts ? nearestOnPoly(d.pts, ux, uy) : null;
+}
+
+export function rebuildD(d: Drawing) {
+	if (d.kind === "pen" && d.anchors) d.d = penD(d.anchors, !!d.closed);
+	else if (d.pts) d.d = smoothD(d.pts);
+}
+
+export function translateDrawing(d: Drawing, dx: number, dy: number) {
+	if (d.anchors) for (const a of d.anchors) { a.x += dx; a.ix += dx; a.ox += dx; a.y += dy; a.iy += dy; a.oy += dy; }
+	if (d.pts) for (let i = 0; i < d.pts.length; i += 2) { d.pts[i] += dx; d.pts[i + 1] += dy; }
+	rebuildD(d);
+}
+
+export function moveAnchor(d: Drawing, idx: number, dx: number, dy: number) {
+	if (d.anchors) { const a = d.anchors[idx]; a.x += dx; a.ix += dx; a.ox += dx; a.y += dy; a.iy += dy; a.oy += dy; }
+	else if (d.pts) { d.pts[idx * 2] += dx; d.pts[idx * 2 + 1] += dy; }
+	rebuildD(d);
+}
+
+/** Drag one bezier handle. The opposite handle follows (keeping its own length) unless `independent`. */
+export function dragHandle(d: Drawing, idx: number, which: "in" | "out", ux: number, uy: number, independent: boolean) {
+	const a = d.anchors?.[idx];
+	if (!a) return;
+	const [hx, hy, ox, oy] = which === "out" ? (["ox", "oy", "ix", "iy"] as const) : (["ix", "iy", "ox", "oy"] as const);
+	a[hx] = ux; a[hy] = uy;
+	const ol = Math.hypot(a[ox] - a.x, a[oy] - a.y), dl = Math.hypot(ux - a.x, uy - a.y);
+	if (!independent && ol > 1e-9 && dl > 1e-9) { a[ox] = a.x - ((ux - a.x) / dl) * ol; a[oy] = a.y - ((uy - a.y) / dl) * ol; }
+	rebuildD(d);
+}
+
+/** Remove a point. Returns false if the line would be left with too few points (the caller should delete it). */
+export function deleteAnchor(d: Drawing, idx: number): boolean {
+	if (d.anchors) { if (d.anchors.length <= 2) return false; d.anchors.splice(idx, 1); if (d.anchors.length < 3) d.closed = false; }
+	else if (d.pts) { if (d.pts.length <= 4) return false; d.pts.splice(idx * 2, 2); }
+	rebuildD(d);
+	return true;
+}
+
+/** Add a point on the line nearest to (ux,uy). Returns the new point's index, or -1 if it isn't close enough. */
+export function addPointNear(d: Drawing, ux: number, uy: number, maxDist: number): number {
+	const n = nearestOnDrawing(d, ux, uy);
+	if (!n || n.dist > maxDist) return -1;
+	let idx: number;
+	if (d.anchors) idx = splitPen(d.anchors, !!d.closed, n.seg, n.t);
+	else { d.pts!.splice((n.seg + 1) * 2, 0, n.x, n.y); idx = n.seg + 1; }
+	rebuildD(d);
+	return idx;
 }

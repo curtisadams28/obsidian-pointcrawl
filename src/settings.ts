@@ -2,6 +2,7 @@ import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type PointCrawlPlugin from "./main";
 import { ImagePickerModal, importIconImage, renderScaleControls, renderStyleEditor } from "./modals";
 import { applyLineStyle, smoothD } from "./shared/drawing";
+import { DEFAULT_TEXT_STYLE, TextStyle } from "./shared/text";
 import { DEFAULT_LINE, DEFAULT_MAP_SETTINGS, DashStyle, LineStyle, MapSettings, NodeStyle, Visibility, uid } from "./shared/types";
 
 export interface NodeDefaults extends NodeStyle { visibility: Visibility }
@@ -11,6 +12,10 @@ export interface PCSettings {
 	nodeDefaults: NodeDefaults;
 	lineDefaults: LineStyle;
 	eraserSize: number;
+	/** Saved colours, shared by every colour picker. */
+	palette: string[];
+	/** The look of the last text you created, used for the next one. */
+	textDefaults: TextStyle;
 	instantUpdates: boolean;
 	customIcons: CustomIcon[];
 	openOnClick: boolean;
@@ -31,6 +36,8 @@ export const DEFAULT_SETTINGS: PCSettings = {
 	nodeDefaults: { shape: "pin", color: "#c0392b", iconColor: "#1b1b1b", size: 1, halo: true, visibility: "auto" },
 	lineDefaults: { ...DEFAULT_LINE },
 	eraserSize: 0.02,
+	palette: [],
+	textDefaults: { ...DEFAULT_TEXT_STYLE },
 	instantUpdates: true,
 	customIcons: [],
 	openOnClick: true,
@@ -88,6 +95,23 @@ export class PCSettingTab extends PluginSettingTab {
 			.addToggle((t) => t.setValue(s.openOnClick).onChange((v) => { s.openOnClick = v; this.save(); }));
 		new Setting(el).setName("Open notes in")
 			.addDropdown((d) => d.addOptions({ current: "Same tab", tab: "New tab", split: "Split pane" }).setValue(s.openIn).onChange((v) => { s.openIn = v as PCSettings["openIn"]; this.save(); }));
+
+		new Setting(el).setName("Saved colours").setDesc("Your palette. Save colours with the + button beside any colour picker; they show up in every picker (nodes, lines, text). Right-click a swatch to remove it.").setHeading();
+		const pal = el.createDiv({ cls: "pc-swatches pc-wrap pc-palette-mgr" });
+		const renderPal = () => {
+			pal.empty();
+			if (!s.palette.length) pal.createSpan({ cls: "setting-item-description", text: "Nothing saved yet." });
+			for (const c of s.palette) {
+				const b = pal.createEl("button", { cls: "pc-swatch pc-swatch-lg", attr: { "aria-label": `Remove ${c}`, title: `${c} - click to remove` } });
+				b.style.background = c;
+				b.addEventListener("click", async () => { await this.plugin.removePaletteColor(c); renderPal(); });
+			}
+		};
+		renderPal();
+		new Setting(el).setName("Add a colour").addColorPicker((c) => c.setValue("#c0392b").onChange(() => undefined)).addButton((b) => b.setButtonText("Save to palette").onClick(async () => {
+			const input = (b.buttonEl as HTMLElement).parentElement?.querySelector<HTMLInputElement>("input[type=color]");
+			if (input) { await this.plugin.addPaletteColor(input.value); renderPal(); }
+		}));
 
 		new Setting(el).setName("New map defaults").setDesc("Copied into each map when it's created. Change a map's own values from its settings button.").setHeading();
 		new Setting(el).setName("Labels").setDesc("When a node's heading is shown.")

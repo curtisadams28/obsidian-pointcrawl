@@ -5,7 +5,20 @@ import { LiveClient, topicFor } from "../../src/shared/live.js";
 import { MapCanvas } from "../../src/shared/mapcanvas.js";
 import { PyramidSource } from "../../src/shared/tiles.js";
 const $ = (id) => document.getElementById(id);
-const q = new URLSearchParams(location.search);
+// An installed app opens at its start URL without the map in it, so remember the last map and go back to it.
+const LAST = "pointcrawl-last";
+let qs = location.search;
+if (!qs) {
+    try {
+        const saved = localStorage.getItem(LAST);
+        if (saved) {
+            history.replaceState(null, "", location.pathname + saved);
+            qs = saved;
+        }
+    }
+    catch { /* storage blocked */ }
+}
+const q = new URLSearchParams(qs);
 const repo = q.get("r"), branch = q.get("b") || "pointcrawl-data", mapId = q.get("m");
 const p2pEnabled = q.get("p") !== "0";
 const pollMs = Math.max(1, Math.min(60, Number(q.get("poll")) || 2)) * 1000;
@@ -33,8 +46,14 @@ if (!repo || !mapId || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
     showEmpty("This link is incomplete", "Ask your GM to copy the player link again from Obsidian. It should contain the repository and map in the address.");
 }
 else {
+    try {
+        localStorage.setItem(LAST, qs);
+    }
+    catch { /* storage blocked */ }
     start(repo, mapId);
 }
+if ("serviceWorker" in navigator)
+    window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => undefined); });
 function start(repo, mapId) {
     const base = `https://raw.githubusercontent.com/${repo}/${branch}/maps/${mapId}/`;
     const icons = new IconStore((id) => `icons/${id}.png`);
@@ -136,6 +155,7 @@ function start(repo, mapId) {
         for (const [id, c] of Object.entries(st.customIcons ?? {}))
             icons.register(id, c.src, c.raw);
         canvas.drawings = st.drawings ?? [];
+        canvas.texts = st.texts ?? [];
         canvas.nodes = st.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y, title: n.title, style: n.style }));
         if (canvas.pinnedId && !st.nodes.some((n) => n.id === canvas.pinnedId))
             canvas.pinnedId = null;

@@ -8,7 +8,7 @@ function mulberry32(a) {
         return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
 }
-export const TEX_SIZE = 512;
+export const TEX_SIZE = 768;
 /** White texture whose alpha channel is tileable cloud noise. */
 export function makeCloudAlpha(seed, baseFreq, octaves, lo, hi, gamma) {
     const size = TEX_SIZE;
